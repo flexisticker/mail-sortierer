@@ -91,3 +91,7 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Scans haben keinen Absender → lernen nur über die Lieferanten-Entscheidung. Gelernt-Seite: Abschnitt „Rechnungen – gelernt“ mit „vergessen“.
   Mails: Knopf „Seite geprüft – alles passt (n)“ → `confirm()` für alle nicht geänderten Zeilen der Seite (Regel-Treffer + Beispiele).
   Getestet (GreenMail + Mocks): Korrektur FS-3001 → neue Rechnung FS-3002 mit nur „Michael Zatti“ kommt als „Filament Shop / 3dbymicha“, KI bekam 1 Beispiel.
+- **1.4.0 (17.11.2026):** „Zu Lexware prüfen ab Jahr“ (`invoices.fromYear`, 0 = alle; Michael: **2025 ist erledigt → 2026 einstellen**).
+  Ältere Jahre: weiter Ablage `Rechnungen/JJJJ/JJJJ-MM`, aber Status `archived` („Jahr abgeschlossen“), kein Fähnchen, kein Lexware-Knopf (`yearClosed`).
+  Beim Speichern `applyYearSetting()`: offene älterer Jahre → archived (Fähnchen weg), archivierte aus nun geprüften Jahren → wieder offen.
+  Datum in „Angaben ändern“ verschiebt den Status mit.

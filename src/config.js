@@ -24,6 +24,7 @@ export const DEFAULT_CONFIG = {
     privateName: 'Privat',   // Rechnungen/Privat/2026
     noInvoiceName: 'Keine Rechnung',
     flagOpen: true,          // offene Rechnungen in Outlook mit Fähnchen
+    fromYear: 0,             // Rechnungen erst ab diesem Jahr zu Lexware prüfen (0 = alle); ältere = „Jahr abgeschlossen“
     scanEnabled: false,
     scanDir: '/scan',        // Scanner-Ordner im Container (Unraid: Freigabe → /scan)
     lexwareUrl: 'https://api.lexware.io',

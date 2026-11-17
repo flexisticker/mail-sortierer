@@ -26,6 +26,9 @@ function upd (id, f) {
   db.prepare(`UPDATE invoices SET ${k.map(x => x + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`).run(...k.map(x => f[x] ?? null), now(), id)
 }
 
+// Jahr schon erledigt? (Einstellung „Zu Lexware prüfen ab Jahr“)
+export const yearClosed = (ym, cfg = getConfig()) => Number(cfg.invoices.fromYear) > 0 && Number(String(ym).slice(0, 4)) < Number(cfg.invoices.fromYear)
+
 export function collecting (cfg = getConfig()) {
   const acc = cfg.invoices.accountId ? getAccount(cfg.invoices.accountId) : null
   return acc && acc.enabled ? acc : null
@@ -409,20 +412,22 @@ export async function handleMailInvoice (ctx, acc, rec, client) {
     return null
   }
   const parts = monthParts(cfg, info.ym)
-  const flags = cfg.invoices.flagOpen ? ['\\Flagged'] : []
+  const closed = yearClosed(info.ym, cfg)
+  const st = closed ? 'archived' : 'open'
+  const flags = cfg.invoices.flagOpen && !closed ? ['\\Flagged'] : []
   if (target.id === acc.id) {
     // Mail liegt schon im Sammel-Postfach → direkt in den Monatsordner
     const dest = await ensurePath(client, parts)
     if (flags.length) await client.messageFlagsAdd(String(rec.uid), flags, { uid: true })
     const newUid = await moveMessage(client, rec.uid, dest)
-    insertInvoice({ ...base, folder: dest, uid: newUid, same_message: 1, status: 'open' })
+    insertInvoice({ ...base, folder: dest, uid: newUid, same_message: 1, status: st })
     log('info', `Rechnung abgelegt: ${info.supplier || rec.from_addr} ${info.number} → ${dest}`)
     return { folder: dest, uid: newUid }
   }
   const tc = await ctx.client(target)
   const dest = await ensurePath(tc, parts)
   const uid = await appendMessage(tc, dest, src, flags)
-  insertInvoice({ ...base, folder: dest, uid, same_message: 0, status: 'open' })
+  insertInvoice({ ...base, folder: dest, uid, same_message: 0, status: st })
   log('info', `Rechnung aus ${accountLabel(acc)} nach ${accountLabel(target)} kopiert: ${info.supplier || rec.from_addr} ${info.number} → ${dest}`)
   return null
 }
@@ -514,8 +519,9 @@ export async function processScans (ctx, stats) {
         to: target.user, subject, fileName: name, pdf, msgid, date: new Date(),
         text: `Eingescannt am ${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}\nDatei: ${name}\nLieferant: ${info.supplier || '-'}\nRechnungsnummer: ${info.number || '-'}\nDatum: ${info.date || '-'}\nBetrag: ${info.amount != null ? info.amount.toFixed(2).replace('.', ',') + ' ' + info.currency : '-'}\n`
       })
-      const uid = await appendMessage(tc, dest, mail, cfg.invoices.flagOpen ? ['\\Flagged'] : [])
-      insertInvoice({ ...base, account_id: target.id, folder: dest, uid, same_message: 1, status: 'open' })
+      const closed = yearClosed(info.ym, cfg)
+      const uid = await appendMessage(tc, dest, mail, cfg.invoices.flagOpen && !closed ? ['\\Flagged'] : [])
+      insertInvoice({ ...base, account_id: target.id, folder: dest, uid, same_message: 1, status: closed ? 'archived' : 'open' })
       moveScanFile(dir, file, info.ym)
       stats.scans = (stats.scans || 0) + 1
       log('info', `Scan abgelegt: ${name} → ${dest}`)
@@ -682,6 +688,8 @@ export async function editInvoice (id, f) {
   if (oldYm !== newYm && ['open', 'sent', 'error'].includes(inv.status) && inv.folder) {
     loc = await withTarget(client => relocate(client, inv, monthParts(cfg, newYm), undefined))
   }
+  if (inv.status === 'archived' && !yearClosed(newYm, cfg)) next.status = 'open'
+  else if (['open', 'error'].includes(inv.status) && yearClosed(newYm, cfg)) next.status = 'archived'
   upd(inv.id, { ...next, ...loc })
   // Geänderte Angaben = Lernbeispiel (Lieferantenname, Firma, Inhalt … beim nächsten Mal so)
   const changed = ['supplier', 'number', 'inv_date', 'amount', 'content', 'brand'].some(k => next[k] !== undefined && String(next[k] ?? '') !== String(inv[k] ?? ''))
@@ -702,4 +710,24 @@ export async function dropForMail (mailId) {
 }
 
 const cfg0 = () => getConfig()
-export const STATUS = { open: 'Offen', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler', blocked: 'Gesperrt' }
+export const STATUS = { open: 'Offen', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler', blocked: 'Gesperrt', archived: 'Jahr abgeschlossen' }
+
+// Nach Änderung von „ab Jahr“: offene Rechnungen älterer Jahre abschließen (Fähnchen weg) bzw. wieder öffnen
+export async function applyYearSetting () {
+  const cfg = getConfig()
+  const ymRow = (r) => ymOf(r.inv_date, r.created_at)
+  const toClose = db.prepare("SELECT * FROM invoices WHERE status IN ('open', 'error')").all().filter(r => yearClosed(ymRow(r), cfg))
+  const toOpen = db.prepare("SELECT * FROM invoices WHERE status = 'archived'").all().filter(r => !yearClosed(ymRow(r), cfg))
+  if (!toClose.length && !toOpen.length) return { closed: 0, opened: 0 }
+  for (const r of toClose) upd(r.id, { status: 'archived', decided_at: now() })
+  for (const r of toOpen) upd(r.id, { status: 'open', decided_at: null })
+  // Fähnchen in Outlook nachziehen (Fehler hier sind nicht schlimm – nur Optik)
+  try {
+    await withTarget(async (client) => {
+      for (const r of toClose) await relocate(client, r, null, false).catch(() => {})
+      if (cfg.invoices.flagOpen) for (const r of toOpen) await relocate(client, r, null, true).catch(() => {})
+    })
+  } catch (e) { log('warn', 'Fähnchen konnten nicht angepasst werden: ' + e.message) }
+  log('info', `Rechnungen ab ${cfg.invoices.fromYear || 'allen Jahren'}: ${toClose.length} abgeschlossen, ${toOpen.length} wieder offen`)
+  return { closed: toClose.length, opened: toOpen.length }
+}

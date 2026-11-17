@@ -11,7 +11,7 @@ import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
 import { runOnce, isRunning, getStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
-import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release, editInvoice, forgetInvoiceLearning, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
+import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release, editInvoice, forgetInvoiceLearning, applyYearSetting, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
 import { listModels } from './ollama.js'
 import { classify } from './classify.js'
@@ -490,7 +490,7 @@ export function createApp () {
     const here = req.originalUrl
     const money = (v, c) => v == null ? '–' : v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + (c && c !== 'EUR' ? c : '€')
     const ymd = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : ''
-    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['blocked', `Gesperrt (${counts.blocked || 0})`], ['', 'Alle']]
+    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['blocked', `Gesperrt (${counts.blocked || 0})`], ['archived', `Jahr abgeschlossen (${counts.archived || 0})`], ['', 'Alle']]
     // nach Monat gruppieren (Monat = Rechnungsdatum)
     const ymOfRow = (r) => (/^\d{4}-\d{2}/.test(r.inv_date || '') ? r.inv_date : r.created_at).slice(0, 7)
     const groups = []
@@ -547,6 +547,7 @@ export function createApp () {
     }
     const body = `
     <h1>Rechnungen</h1>
+    ${cfg.invoices.fromYear ? `<p class="muted small">Geprüft wird ab <b>${cfg.invoices.fromYear}</b> – ältere Jahre sind abgeschlossen (<a href="/einstellungen#rechnungen">ändern</a>).</p>` : ''}
     <p class="muted">Nichts geht von selbst zu Lexware – erst wenn du hier auf „Ab zu Lexware“ klickst. Zum Prüfen markierte (❓) und private Rechnungen werden beim Monats-Knopf nicht mitgeschickt.</p>
     ${target ? '' : '<div class="alert bad">Noch kein Sammel-Postfach gewählt – <a href="/einstellungen#rechnungen">Einstellungen → Rechnungen</a>.</div>'}
     ${hasSecret('lexwareKey') ? '' : '<div class="alert bad">Noch kein Lexware-Schlüssel hinterlegt – „Ab zu Lexware“ geht erst danach (<a href="/einstellungen#rechnungen">Einstellungen</a>).</div>'}
@@ -653,6 +654,8 @@ export function createApp () {
         <label>Dein Name auf Rechnungen<input name="ownerName" value="${esc(cfg.invoices.ownerName)}" maxlength="80"></label>
         <label>Deine Firmen/Marken (je Zeile)<textarea name="companies" rows="3" maxlength="500">${esc(cfg.invoices.companies)}</textarea></label>
         <p class="muted small span">Steht eine Firma in der Rechnung (z. B. „Michael Zatti – Flexisticker“), gilt sie als geschäftlich und bekommt das Etikett dieser Firma. Steht nur dein Name da, entscheidet die KI nach dem Inhalt – im Zweifel „Bitte prüfen“.</p>
+        <label>Zu Lexware prüfen ab Jahr<input name="fromYear" type="number" min="0" max="2100" value="${cfg.invoices.fromYear || ''}" placeholder="alle Jahre"></label>
+        <p class="muted small">Ältere Jahre sind erledigt: Rechnungen daraus werden weiter nach Jahr/Monat abgelegt, aber ohne Fähnchen und ohne „Ab zu Lexware“ (Status „Jahr abgeschlossen“).</p>
         <label class="check"><input type="checkbox" name="scanEnabled" value="1"${chk(cfg.invoices.scanEnabled)}> Scanner-Ordner abholen</label>
         <label>Scanner-Ordner (im Container)<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="200"></label>
         <p class="muted small span">Der Scanner legt PDFs in die Unraid-Freigabe „scan“ (im Container <code>/scan</code>). Verarbeitete Dateien wandern nach <code>erledigt/JJJJ-MM</code>, doppelte nach <code>erledigt/doppelt</code> – gelöscht wird nichts. Scans werden nur abgeholt, wenn das Sammel-Postfach scharf ist.</p>
@@ -775,12 +778,15 @@ export function createApp () {
       noInvoiceName: cleanFolderName(b.noInvoiceName) || 'Keine Rechnung',
       flagOpen: b.flagOpen === '1',
       scanEnabled: b.scanEnabled === '1',
+      fromYear: b.fromYear ? int(b.fromYear, 2000, 2100, 0) : 0,
       scanDir: String(b.scanDir || '/scan').trim().slice(0, 200),
       lexwareUrl: lexUrl || 'https://api.lexware.io',
       ownerName: String(b.ownerName || '').trim().slice(0, 80),
       companies: String(b.companies || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 20).join('\n')
     } })
     if (b.lexwareKey) setSecret('lexwareKey', String(b.lexwareKey).trim().slice(0, 500))
+    const yr = await applyYearSetting().catch(e => { log('warn', e.message); return { closed: 0, opened: 0 } })
+    if (b.next !== 'test' && (yr.closed || yr.opened)) return back(res, '/einstellungen#rechnungen', { msg: `Gespeichert. ${yr.closed ? yr.closed + ' Rechnung(en) älterer Jahre abgeschlossen' : ''}${yr.closed && yr.opened ? ', ' : ''}${yr.opened ? yr.opened + ' wieder offen' : ''}.` })
     if (b.next !== 'test') return back(res, '/einstellungen#rechnungen', { msg: 'Gespeichert.' })
     try { const name = await lexwareTest(); back(res, '/einstellungen#rechnungen', { msg: `Lexware Office verbunden: ${name}` }) } catch (e) { back(res, '/einstellungen#rechnungen', { err: 'Lexware-Test fehlgeschlagen: ' + errText(e) }) }
   })
