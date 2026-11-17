@@ -6,12 +6,13 @@ import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { db, now, log } from './db.js'
 import { hasUsers, createUser, login, logout, sessionFor, verifyPassword, changePassword } from './auth.js'
-import { getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
+import { PLATFORM, getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
 import { runOnce, isRunning, getStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
+import { licenseState, activate, checkin, release } from './license.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
-import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release, editInvoice, forgetInvoiceLearning, applyYearSetting, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
+import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release as releaseInvoice, editInvoice, forgetInvoiceLearning, applyYearSetting, checkScanDir, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
 import { listModels } from './ollama.js'
 import { classify } from './classify.js'
@@ -97,7 +98,7 @@ export function createApp () {
       body: `<section class="card narrow"><h1>Willkommen</h1>
       <p>Lege das Konto für die Oberfläche an. Es gibt nur dieses eine Konto.</p>
       <form method="post" action="/einrichten" class="form">
-        <label>Benutzername<input name="name" required maxlength="40" autocomplete="username" value="michael"></label>
+        <label>Benutzername<input name="name" required maxlength="40" autocomplete="username"></label>
         <label>Passwort (mind. 10 Zeichen)<input name="pw" type="password" required minlength="10" autocomplete="new-password"></label>
         <label>Passwort wiederholen<input name="pw2" type="password" required minlength="10" autocomplete="new-password"></label>
         <button class="btn primary">Konto anlegen</button></form></section>`
@@ -172,8 +173,10 @@ export function createApp () {
       [(counts.planned || 0) + (counts.moved || 0) > 0, 'Vorschläge im Probelauf ansehen und korrigieren', '/mails?status=planned'],
       [anyLive, 'Postfächer scharf schalten – dann wird wirklich verschoben', '#postfaecher']
     ]
+    const L = licenseState()
     const body = `
     <h1>Übersicht</h1>
+    ${!L.exempt && (L.warn || !L.full) ? `<div class="alert ${L.full ? 'ok' : 'bad'}">${esc(L.message)} <a href="/einstellungen#lizenz">Lizenz</a></div>` : ''}
     ${steps.every(x => x[0]) ? '' : `<section class="card"><h2>Erste Schritte</h2><ol class="steps">${steps.map(([done, text, href]) => `<li class="${done ? 'done' : ''}"><a href="${href}">${esc(text)}</a></li>`).join('')}</ol></section>`}
     ${openInv ? `<section class="card"><h2>Rechnungen</h2><p><b>${openInv}</b> offene Rechnung(en) warten auf „Zur Buchhaltung“ oder „Privat“${checkInv ? `, davon <b>${checkInv}</b> zum Prüfen (Firma oder privat?)` : ''}.</p><a class="btn primary" href="/rechnungen">Rechnungen ansehen</a></section>` : ''}
     ${sus || spamN ? `<section class="card"><h2>Sicherheit (7 Tage)</h2><p>${sus ? `<b>${sus}</b> verdächtige Mail(s) nach „${esc(targetLabel('verdacht', cfg))}“ verschoben. ` : ''}${spamN ? `<b>${spamN}</b> Spam-Mail(s) aussortiert.` : ''}</p>
@@ -594,7 +597,7 @@ export function createApp () {
       }
       if (req.body.aktion === 'privat') return back(res, to, { msg: `${await markPrivate(ids)} als privat abgelegt.` })
       if (req.body.aktion === 'keine') return back(res, to, { msg: `${await markNoInvoice(ids)} als „keine Rechnung“ abgelegt.` })
-      if (req.body.aktion === 'freigeben') return back(res, to, { msg: `${release(ids)} Beleg(e) freigegeben – jetzt „Zur Buchhaltung“ möglich.` })
+      if (req.body.aktion === 'freigeben') return back(res, to, { msg: `${releaseInvoice(ids)} Beleg(e) freigegeben – jetzt „Zur Buchhaltung“ möglich.` })
       if (req.body.aktion === 'oeffnen') return back(res, to, { msg: `${await reopen(ids)} wieder offen.` })
       back(res, to, { err: 'Unbekannte Aktion.' })
     } catch (e) { back(res, to, { err: errText(e) }) }
@@ -629,10 +632,25 @@ export function createApp () {
     const chk = (v) => v ? ' checked' : ''
     const accounts = listAccounts()
     const target = collecting(cfg)
+    const licSection = () => {
+      const L = licenseState()
+      if (L.exempt) return ''
+      const label = { trial: 'Testzeitraum', active: 'Aktiv', trialover: 'Test abgelaufen', expired: 'Abgelaufen', lease: 'Nicht bestätigt', revoked: 'Gesperrt', invalid: 'Ungültig', nomodule: 'Modul fehlt', released: 'Freigegeben' }[L.state] || L.state
+      return `<section class="card" id="lizenz"><h2>Lizenz</h2>
+      <p>Status: <span class="pill ${L.state === 'active' ? 'good' : L.full ? 'warn' : 'bad'}">${esc(label)}</span>${L.license ? ` · ${esc(L.license.company)} · Schlüssel …${esc(L.license.keyHint)}${L.license.validUntil ? ' · gültig bis ' + esc(new Date(L.license.validUntil).toLocaleDateString('de-DE')) : ''}` : ''}</p>
+      ${L.message ? `<p class="${L.full ? 'muted' : 'bad'}">${esc(L.message)}</p>` : ''}
+      <p class="muted small">Der Mail-Sortierer wird über die Vedly-Lizenz freigeschaltet (Modul „Mail-Sortierer“). Ohne Lizenz läuft nach dem Test nur noch der Probelauf. Installations-ID: <code>${esc(L.installId)}</code></p>
+      ${L.state === 'active' ? `<div class="row wrap"><form method="post" action="/lizenz/pruefen">${csrf(s)}<button class="btn">Jetzt bei der Zentrale prüfen</button></form>
+        <form method="post" action="/lizenz/freigeben">${csrf(s)}<button class="btn ghost" data-confirm="Lizenz auf diesem Rechner freigeben (z. B. vor einem PC-Wechsel)? Danach nur noch Probelauf.">Lizenz freigeben</button></form></div>`
+        : `<form method="post" action="/lizenz/aktivieren" class="form two">${csrf(s)}
+        <label>Vedly-Lizenzschlüssel<input name="key" placeholder="VED-XXXX-XXXX-XXXX-XXXX" maxlength="40" autocomplete="off" required></label>
+        <div class="row span"><button class="btn primary">Aktivieren</button></div></form>`}
+      </section>`
+    }
     const accountForm = (a) => `<form method="post" action="/postfaecher" class="form two">${csrf(s)}<input type="hidden" name="id" value="${a ? a.id : ''}">
-        <label>Name (frei)<input name="name" value="${esc(a ? a.name : '')}" maxlength="80" placeholder="z. B. Info, Rechnung, Michael"></label>
+        <label>Name (frei)<input name="name" value="${esc(a ? a.name : '')}" maxlength="80" placeholder="z. B. Info, Rechnung, Chef"></label>
         <label>Benutzer (meist die Mail-Adresse)<input name="user" value="${esc(a ? a.user : '')}" autocomplete="off" maxlength="200" required></label>
-        <label>Server<input name="host" value="${esc(a ? a.host : (accounts[0] ? accounts[0].host : ''))}" placeholder="z. B. alfa3xxx.alfahosting-server.de" maxlength="200" required></label>
+        <label>Server<input name="host" value="${esc(a ? a.host : (accounts[0] ? accounts[0].host : ''))}" placeholder="z. B. imap.dein-anbieter.de" maxlength="200" required></label>
         <label>Port<input name="port" type="number" value="${esc(a ? a.port : 993)}" min="1" max="65535"></label>
         <label>Passwort${a && accountHasPassword(a) ? ' <span class="pill good">gespeichert</span>' : ''}<input name="pass" type="password" autocomplete="new-password" placeholder="${a && accountHasPassword(a) ? 'leer lassen = unverändert' : ''}"${a ? '' : ' required'}></label>
         <label class="check"><input type="checkbox" name="secure" value="1"${chk(a ? a.secure : 1)}> SSL/TLS (Port 993)</label>
@@ -642,6 +660,19 @@ export function createApp () {
       </form>`
     const body = `
     <h1>Einstellungen</h1>
+    <section class="card" id="betrieb"><h2>Dein Betrieb</h2>
+      <p class="muted">Hilft der KI beim Einordnen und bei der Frage „Firma oder privat?“. Nichts davon verlässt deinen Rechner.</p>
+      <form method="post" action="/einstellungen/betrieb" class="form two">${csrf(s)}
+        <label>Name des Betriebs<input name="bizName" value="${esc(cfg.business.name)}" maxlength="80" placeholder="z. B. Musterdruck"></label>
+        <label>Was macht der Betrieb?<input name="bizDesc" value="${esc(cfg.business.description)}" maxlength="200" placeholder="z. B. Textildruck und Werbetechnik"></label>
+        <label>Dein Name, wie er auf Rechnungen steht<input name="ownerName" value="${esc(cfg.invoices.ownerName)}" maxlength="80" placeholder="z. B. Max Muster"></label>
+        <label>Deine Firmen/Marken (je Zeile)<textarea name="companies" rows="3" maxlength="500" placeholder="z. B. Musterdruck">${esc(cfg.invoices.companies)}</textarea></label>
+        <p class="muted small span">Steht eine dieser Firmen in einer Rechnung (z. B. „Max Muster – Musterdruck“), gilt sie als geschäftlich und bekommt das Etikett der Firma. Steht nur dein Name da, entscheidet die KI nach dem Inhalt – im Zweifel „Bitte prüfen“.</p>
+        <div class="row span"><button class="btn primary">Speichern</button></div>
+      </form></section>
+
+    ${licSection()}
+
     <section class="card" id="postfaecher"><h2>Postfächer</h2>
       <p class="muted">Alle Postfächer, die sortiert werden sollen (Zugangsdaten wie in Outlook). Passwörter werden verschlüsselt gespeichert und nie angezeigt. Gelerntes gilt für alle Postfächer.</p>
       ${accounts.map(a => `<details class="acc"${String(req.query.offen) === String(a.id) ? ' open' : ''}><summary><b>${esc(accountLabel(a))}</b> <span class="muted small">${esc(a.user)} · ${esc(a.host)}</span>
@@ -660,14 +691,16 @@ export function createApp () {
         <label>Ordner für Privates<input name="privateName" value="${esc(cfg.invoices.privateName)}" maxlength="60"></label>
         <label>Ordner für „keine Rechnung“<input name="noInvoiceName" value="${esc(cfg.invoices.noInvoiceName)}" maxlength="60"></label>
         <label class="check span"><input type="checkbox" name="flagOpen" value="1"${chk(cfg.invoices.flagOpen)}> Offene Rechnungen in Outlook mit Fähnchen markieren</label>
-        <label>Dein Name auf Rechnungen<input name="ownerName" value="${esc(cfg.invoices.ownerName)}" maxlength="80"></label>
-        <label>Deine Firmen/Marken (je Zeile)<textarea name="companies" rows="3" maxlength="500">${esc(cfg.invoices.companies)}</textarea></label>
-        <p class="muted small span">Steht eine Firma in der Rechnung (z. B. „Michael Zatti – Flexisticker“), gilt sie als geschäftlich und bekommt das Etikett dieser Firma. Steht nur dein Name da, entscheidet die KI nach dem Inhalt – im Zweifel „Bitte prüfen“.</p>
         <label>Zu Lexware prüfen ab Jahr<input name="fromYear" type="number" min="0" max="2100" value="${cfg.invoices.fromYear || ''}" placeholder="alle Jahre"></label>
         <p class="muted small">Ältere Jahre sind erledigt: Rechnungen daraus werden weiter nach Jahr/Monat abgelegt, aber ohne Fähnchen und ohne „Ab zu Lexware“ (Status „Jahr abgeschlossen“).</p>
         <label class="check"><input type="checkbox" name="scanEnabled" value="1"${chk(cfg.invoices.scanEnabled)}> Scanner-Ordner abholen</label>
-        <label>Scanner-Ordner (im Container)<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="200"></label>
-        <p class="muted small span">Der Scanner legt PDFs in die Unraid-Freigabe „scan“ (im Container <code>/scan</code>). Verarbeitete Dateien wandern nach <code>erledigt/JJJJ-MM</code>, doppelte nach <code>erledigt/doppelt</code> – gelöscht wird nichts. Scans werden nur abgeholt, wenn das Sammel-Postfach scharf ist.</p>
+        ${PLATFORM === 'windows' ? `<label>Scanner-Ordner<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="260" placeholder="z. B. C:\\Scans oder \\\\NAS\\scan"></label>
+        <label>Benutzer für die Netzwerkfreigabe (nur bei \\\\…)<input name="scanUser" value="${esc(cfg.invoices.scanUser)}" maxlength="120" autocomplete="off"></label>
+        <label>Passwort der Freigabe${hasSecret('scanPassword') ? ' <span class="pill good">gespeichert</span>' : ''}<input name="scanPass" type="password" autocomplete="new-password" placeholder="${hasSecret('scanPassword') ? 'leer lassen = unverändert' : ''}"></label>
+        <p class="muted small span">Den Ordner, in den dein Scanner die PDFs legt (gleicher Pfad wie im Explorer). Der Mail-Sortierer läuft als Windows-Dienst: Laufwerksbuchstaben wie <code>S:</code> sieht er nicht – für Netzwerkordner den vollen Pfad <code>\\\\Server\\Freigabe</code> mit Benutzer und Passwort angeben. Verarbeitete Dateien wandern nach <code>erledigt\\JJJJ-MM</code> – gelöscht wird nichts.</p>`
+          : `<label>Scanner-Ordner (im Container)<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="200"></label>
+        <p class="muted small span">Der Scanner legt PDFs in eine Freigabe, die beim Container als <code>/scan</code> eingebunden ist. Verarbeitete Dateien wandern nach <code>erledigt/JJJJ-MM</code>, doppelte nach <code>erledigt/doppelt</code> – gelöscht wird nichts. Scans werden nur abgeholt, wenn das Sammel-Postfach scharf ist.</p>`}
+        <div class="row span"><button class="btn" name="next" value="scantest">Speichern &amp; Ordner prüfen</button></div>
         <label>Lexware-API-Schlüssel${hasSecret('lexwareKey') ? ' <span class="pill good">gespeichert</span>' : ''}<input name="lexwareKey" type="password" autocomplete="new-password" placeholder="${hasSecret('lexwareKey') ? 'leer lassen = unverändert' : 'Schlüssel aus Lexware Office'}"></label>
         <label>Lexware-Adresse<input name="lexwareUrl" value="${esc(cfg.invoices.lexwareUrl)}" maxlength="200"></label>
         <p class="muted small span">Eigenen Schlüssel anlegen (Lexware Office → Erweiterungen → Public API) mit möglichst wenigen Rechten: <b>Dateien/Belegbilder hochladen</b> und <b>Profil lesen</b>. „Zur Buchhaltung“ legt die Rechnung in Lexware unter „Belege zu prüfen“ ab.</p>
@@ -675,7 +708,7 @@ export function createApp () {
       </form></section>
 
     <section class="card" id="ki"><h2>Lokale KI (Ollama)</h2>
-      <p class="muted">Die KI läuft auf deinem Server. Empfohlen für die GTX 1060 (6 GB): <code>qwen2.5:7b</code>; bei 3 GB: <code>qwen2.5:3b</code>. Modell vorher in Ollama laden (<code>ollama pull qwen2.5:7b</code>).</p>
+      <p class="muted">Die KI läuft bei dir – nichts geht ins Internet. ${PLATFORM === 'windows' ? 'Dafür „Ollama für Windows“ von ollama.com installieren (läuft dann unter <code>http://localhost:11434</code>) oder die Adresse eines Ollama-Servers im Netzwerk eintragen.' : 'Ollama-Adresse z. B. <code>http://&lt;Server-IP&gt;:11434</code>.'} Empfohlen mit Grafikkarte ab 6 GB: <code>qwen2.5:7b</code>; kleinere Karte oder ohne Grafikkarte: <code>qwen2.5:3b</code>. Modell vorher laden (<code>ollama pull qwen2.5:7b</code>).</p>
       <form method="post" action="/einstellungen/ki" class="form two">${csrf(s)}
         <label>Ollama-Adresse<input name="url" value="${esc(cfg.ollama.url)}" maxlength="200"></label>
         <label>Modell<input name="model" value="${esc(cfg.ollama.model)}" list="modelle" maxlength="100"><datalist id="modelle">${models.map(m => `<option value="${esc(m)}">`).join('')}</datalist></label>
@@ -722,12 +755,12 @@ export function createApp () {
 
     <section class="card" id="sicherheit"><h2>Sicherheit</h2>
       <p class="muted">Jede Mail wird vor allem anderen geprüft: gefährliche Anhänge (Programme, Makros, getarnte Dateien, Archive mit Passwort), PDFs mit Skripten, gefälschte Absender und Links, nachgemachte Domains, Druck plus Passwortabfrage, Absender-Prüfung des Mailservers (SPF/DKIM/DMARC). Anhänge werden dabei nie geöffnet. Verdächtige Mails kommen nach „${esc(targetLabel('verdacht', cfg))}“, Spam nach „${esc(targetLabel('spam', cfg))}“ – gelöscht wird nichts.</p>
-      ${getStatus().dnsWarning ? `<div class="alert bad">Spam-Sperrliste: ${esc(getStatus().dnsWarning)}. Abhilfe: Unraid/Container einen eigenen DNS-Server nutzen lassen (nicht 8.8.8.8/1.1.1.1) oder die Liste entfernen.</div>` : ''}
+      ${getStatus().dnsWarning ? `<div class="alert bad">Spam-Sperrliste: ${esc(getStatus().dnsWarning)}. Abhilfe: einen eigenen DNS-Server nutzen (z. B. den des Routers) (nicht 8.8.8.8/1.1.1.1) oder die Liste entfernen.</div>` : ''}
       <form method="post" action="/einstellungen/sicherheit" class="form two">${csrf(s)}
         <label>Ab dieser Punktzahl „Verdacht“<input name="phishThreshold" type="number" value="${cfg.security.phishThreshold}" min="20" max="300"></label>
         <label>Ab dieser Punktzahl Warnhinweis<input name="warnThreshold" type="number" value="${cfg.security.warnThreshold}" min="5" max="300"></label>
         <label class="check span"><input type="checkbox" name="blockDangerous" value="1"${chk(cfg.security.blockDangerous)}> Mails mit gefährlichen Anhängen immer nach „Verdacht“ (empfohlen)</label>
-        <label class="check span"><input type="checkbox" name="spamHeader" value="1"${chk(cfg.security.spamHeader)}> Spam-Kennzeichnung des Mailservers übernehmen (z. B. Alfahosting)</label>
+        <label class="check span"><input type="checkbox" name="spamHeader" value="1"${chk(cfg.security.spamHeader)}> Spam-Kennzeichnung des Mailservers übernehmen (X-Spam-Flag deines Anbieters)</label>
         <label class="check span"><input type="checkbox" name="dnsbl" value="1"${chk(cfg.security.dnsbl)}> Spam-Sperrlisten abfragen – dabei gehen <b>nur IP-Adresse des Absender-Servers und Domains</b> an den Listenbetreiber, nie Inhalte</label>
         <label>Sperrlisten für Server-IPs (je Zeile)<textarea name="ipLists" rows="2" maxlength="300">${esc(cfg.security.ipLists)}</textarea></label>
         <label>Sperrlisten für Domains (je Zeile)<textarea name="domainLists" rows="2" maxlength="300">${esc(cfg.security.domainLists)}</textarea></label>
@@ -774,6 +807,25 @@ export function createApp () {
     back(res, '/einstellungen#postfaecher', { msg: `${accountLabel(acc)} entfernt.` })
   })
 
+  app.post('/einstellungen/betrieb', (req, res) => {
+    const b = req.body
+    saveConfig({
+      business: { name: String(b.bizName || '').trim().slice(0, 80), description: String(b.bizDesc || '').trim().slice(0, 200) },
+      invoices: { ownerName: String(b.ownerName || '').trim().slice(0, 80), companies: String(b.companies || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 20).join('\n') }
+    })
+    back(res, '/einstellungen#betrieb', { msg: 'Gespeichert.' })
+  })
+  app.post('/lizenz/aktivieren', async (req, res) => {
+    try { await activate(req.body.key, getConfig().business.name); back(res, '/einstellungen#lizenz', { msg: 'Lizenz aktiviert – vielen Dank!' }) } catch (e) { back(res, '/einstellungen#lizenz', { err: errText(e) }) }
+  })
+  app.post('/lizenz/pruefen', async (req, res) => {
+    const st = await checkin({ force: true })
+    back(res, '/einstellungen#lizenz', st.check && st.check.ok ? { msg: 'Lizenz bestätigt.' } : { err: 'Prüfung fehlgeschlagen: ' + ((st.check && st.check.error) || 'unbekannt') })
+  })
+  app.post('/lizenz/freigeben', async (req, res) => {
+    try { await release(); back(res, '/einstellungen#lizenz', { msg: 'Lizenz freigegeben – sie kann jetzt auf einem anderen Rechner aktiviert werden.' }) } catch (e) { back(res, '/einstellungen#lizenz', { err: errText(e) }) }
+  })
+
   app.post('/einstellungen/rechnungen', async (req, res) => {
     const b = req.body
     const accId = int(b.accountId, 0, 1e9, 0)
@@ -788,12 +840,15 @@ export function createApp () {
       flagOpen: b.flagOpen === '1',
       scanEnabled: b.scanEnabled === '1',
       fromYear: b.fromYear ? int(b.fromYear, 2000, 2100, 0) : 0,
-      scanDir: String(b.scanDir || '/scan').trim().slice(0, 200),
+      scanDir: String(b.scanDir || '').trim().slice(0, 260),
+      scanUser: String(b.scanUser || '').trim().slice(0, 120),
       lexwareUrl: lexUrl || 'https://api.lexware.io',
-      ownerName: String(b.ownerName || '').trim().slice(0, 80),
-      companies: String(b.companies || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 20).join('\n')
     } })
     if (b.lexwareKey) setSecret('lexwareKey', String(b.lexwareKey).trim().slice(0, 500))
+    if (b.scanPass) setSecret('scanPassword', String(b.scanPass).slice(0, 200))
+    if (b.next === 'scantest') {
+      try { const r = await checkScanDir(); return back(res, '/einstellungen#rechnungen', { msg: `Scanner-Ordner erreichbar: ${r.pdfs} PDF(s) warten, Schreiben klappt.` }) } catch (e) { return back(res, '/einstellungen#rechnungen', { err: 'Scanner-Ordner: ' + errText(e) }) }
+    }
     const yr = await applyYearSetting().catch(e => { log('warn', e.message); return { closed: 0, opened: 0 } })
     if (b.next !== 'test' && (yr.closed || yr.opened)) return back(res, '/einstellungen#rechnungen', { msg: `Gespeichert. ${yr.closed ? yr.closed + ' Rechnung(en) älterer Jahre abgeschlossen' : ''}${yr.closed && yr.opened ? ', ' : ''}${yr.opened ? yr.opened + ' wieder offen' : ''}.` })
     if (b.next !== 'test') return back(res, '/einstellungen#rechnungen', { msg: 'Gespeichert.' })

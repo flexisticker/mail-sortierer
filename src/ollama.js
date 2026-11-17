@@ -2,7 +2,7 @@
 
 function base (cfg) {
   const u = String(cfg.ollama.url || '').trim().replace(/\/+$/, '')
-  if (!/^https?:\/\//.test(u)) throw new Error('Ollama-Adresse fehlt oder ist ungültig (z. B. http://192.168.1.10:11434).')
+  if (!/^https?:\/\//.test(u)) throw new Error('Ollama-Adresse fehlt oder ist ungültig (z. B. http://localhost:11434 oder http://<Server-IP>:11434).')
   return u
 }
 

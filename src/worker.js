@@ -8,6 +8,7 @@ import { classify } from './classify.js'
 import { recordCorrection, addExample, learnSender, isTrusted, isKnown } from './learn.js'
 import { phishCheck, brandList, blocklistCheck, senderIp, pdfRisk } from './security.js'
 import { handleMailInvoice, processScans, collecting, dropForMail } from './invoice.js'
+import { licensedFull } from './license.js'
 
 const MAX_RUN_MS = 20 * 60 * 1000
 const byMsgid = db.prepare('SELECT * FROM mails WHERE account_id = ? AND msgid = ?')
@@ -249,7 +250,9 @@ async function run (why) {
   const ctx = makeCtx()
   let failed = null
   try {
-    const accounts = enabledAccounts()
+    // Ohne gültige Lizenz nur Probelauf: nichts wird verschoben oder abgelegt
+    const full = licensedFull()
+    const accounts = enabledAccounts().map(a => full ? a : { ...a, mode: 'probe' })
     let budget = isNight(cfg) ? Number(cfg.batchNight) || 300 : Number(cfg.batchDay) || 25
     for (const acc of accounts) {
       if (Date.now() - started > MAX_RUN_MS) break
@@ -276,7 +279,7 @@ async function run (why) {
       for (const k of Object.keys(stats)) if (typeof stats[k] === 'number') total[k] = (total[k] || 0) + stats[k]
       if (stats.dnsWarning) total.dnsWarning = stats.dnsWarning
     }
-    if (!failed) {
+    if (!failed && full) {
       try { await processScans(ctx, total) } catch (e) { failed = 'Scanner: ' + e.message; log('error', failed) }
     }
     const msg = `Durchlauf (${why}): ${total.read} gelesen, ${total.moved} verschoben, ${total.planned} im Probelauf vorgemerkt, ${total.kept} bleiben im Posteingang, ${total.corrections} Korrekturen` +
@@ -301,8 +304,9 @@ export async function correct (id, target) {
   const rec = byId.get(id)
   if (!rec) throw new Error('Mail nicht gefunden')
   if (target !== 'inbox' && !categoryById(target, cfg)) throw new Error('Unbekannter Ordner')
-  const acc = getAccount(rec.account_id)
-  if (!acc) throw new Error('Postfach gibt es nicht mehr')
+  const acc0 = getAccount(rec.account_id)
+  if (!acc0) throw new Error('Postfach gibt es nicht mehr')
+  const acc = licensedFull() ? acc0 : { ...acc0, mode: 'probe' }
   recordCorrection(rec, target, 'ui')
   if (rec.decision === 'rechnungen' && target !== 'rechnungen') await dropForMail(rec.id)
   const base = { decision: target, source: 'correction', reason: 'korrigiert', confidence: null, error: null }

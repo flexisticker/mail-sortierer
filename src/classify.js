@@ -16,20 +16,27 @@ function schema (ids) {
   }
 }
 
+// „eines kleinen Betriebs (Firma – Beschreibung)“ aus den Einstellungen
+export function bizText (cfg) {
+  const b = cfg.business || {}
+  const name = String(b.name || '').trim(); const desc = String(b.description || '').trim()
+  return name || desc ? `des Betriebs ${[name, desc].filter(Boolean).join(' – ')}` : 'eines kleinen Betriebs'
+}
+
 function systemPrompt (cfg) {
   const cats = kiCategories(cfg)
   return [
-    'Du sortierst E-Mails eines kleinen Textil- und Tassendruck-Betriebs (Flexisticker, Inhaber Michael) in Ordner.',
+    `Du sortierst E-Mails ${bizText(cfg)} in Ordner.`,
     'Wähle genau eine Kategorie:',
     ...cats.map(c => `- ${c.id}: ${c.name} – ${c.desc}`),
-    '- posteingang: Persönliche oder wichtige Mails, die Michael selbst lesen muss und die in keine Kategorie eindeutig passen, sowie alles, was unklar ist.',
+    '- posteingang: Persönliche oder wichtige Mails, die der Inhaber selbst lesen muss und die in keine Kategorie eindeutig passen, sowie alles, was unklar ist.',
     '',
     'Regeln:',
     '- Eine Mail von einem echten Kunden ist immer „kunden“, auch wenn sie eine Rechnung oder Zahlung erwähnt.',
     '- Rechnungen und Zahlungsbelege von Lieferanten, Dienstleistern oder Abos sind „rechnungen“.',
     '- Bei Zweifeln „posteingang“ wählen oder eine niedrige Sicherheit angeben. Lieber liegen lassen als falsch einsortieren.',
     '- „ausmisten“ nur für eindeutig wertlose Mails.',
-    '- Beachte die Beispiele, wie Michael ähnliche Mails selbst einsortiert hat – sie haben Vorrang.',
+    '- Beachte die Beispiele, wie der Nutzer ähnliche Mails selbst einsortiert hat – sie haben Vorrang.',
     '- sicherheit: 0–100, wie sicher du dir bist. grund: kurz auf Deutsch (höchstens 15 Wörter).',
     '- verdacht: 0–100, wie wahrscheinlich die Mail Phishing oder Betrug ist (gefälschter Absender, will Passwörter, TANs oder Zahlungen, droht mit Sperrung, gefälschte Rechnung). Normale Mails: 0–10.',
     'Antworte nur mit JSON.'
@@ -68,7 +75,7 @@ export async function classify (mail, cfg) {
   const messages = [{ role: 'system', content: systemPrompt(cfg) }]
   for (const e of ex) {
     messages.push({ role: 'user', content: describe(e) })
-    messages.push({ role: 'assistant', content: JSON.stringify({ kategorie: e.target === 'inbox' ? 'posteingang' : e.target, sicherheit: 100, grund: 'So hat Michael es selbst einsortiert.', verdacht: 0 }) })
+    messages.push({ role: 'assistant', content: JSON.stringify({ kategorie: e.target === 'inbox' ? 'posteingang' : e.target, sicherheit: 100, grund: 'So hat der Nutzer es selbst einsortiert.', verdacht: 0 }) })
   }
   messages.push({ role: 'user', content: describe(mail, extra) })
 

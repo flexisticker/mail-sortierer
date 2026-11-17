@@ -5,9 +5,11 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { simpleParser } from 'mailparser'
 import { db, now, log, DATA_DIR, kvGet, kvSet } from './db.js'
-import { getConfig, companyList } from './config.js'
+import { getConfig, companyList, PLATFORM } from './config.js'
+import { execFile } from 'node:child_process'
 import { pdfStreams, pdfRisk, scanAttachment } from './security.js'
 import { FREEMAIL } from './learn.js'
+import { licensedFull } from './license.js'
 import { chatJson } from './ollama.js'
 import { getAccount, accountLabel } from './accounts.js'
 import { withClient, ensurePath, appendMessage, moveMessage, findByMsgId, pathString } from './imap.js'
@@ -130,26 +132,27 @@ const INV_SCHEMA = {
 
 async function kiExtract (cfg, { from, subject, text, fileName, examples }) {
   const companies = companyList(cfg)
-  const owner = cfg.invoices.ownerName || 'Michael Zatti'
+  const owner = String(cfg.invoices.ownerName || '').trim()
+  const biz = cfg.business || {}
   const shots = []
   for (const x of examples || []) {
     shots.push({ role: 'user', content: `Von: ${x.from_addr || '-'}\nInhalt:\n${String(x.snippet || '').slice(0, 800)}` })
     shots.push({ role: 'assistant', content: JSON.stringify({
       ist_rechnung: x.decision !== 'noinvoice', lieferant: x.supplier || '', nummer: x.number || '', datum: x.inv_date || '', betrag: x.amount ?? null, waehrung: 'EUR',
       inhalt: x.content || '', zuordnung: x.decision === 'private' ? 'privat' : x.brand || x.decision === 'business' ? 'firma' : 'unklar', firma: x.brand || '',
-      grund: 'So hat Michael es geprüft.' }) })
+      grund: 'So wurde es geprüft.' }) })
   }
   const r = await chatJson(cfg, [
     { role: 'system', content: [
-      'Du liest Rechnungen für Flexisticker (Textil- und Tassendruck, Inhaber Michael) aus.',
+      `Du liest Rechnungen ${biz.name || biz.description ? `für ${[biz.name, biz.description].filter(Boolean).join(' – ')}` : 'für einen kleinen Betrieb'} aus.`,
       'ist_rechnung: true nur für eine echte Rechnung oder Gutschrift (Beleg für die Buchhaltung) – nicht für Zahlungsbestätigung, Mahnung ohne Rechnung, Kontoauszug, Bestellbestätigung, Angebot oder Werbung.',
       'lieferant: Firma, die die Rechnung stellt (kurz, ohne Rechtsform-Zusätze wenn eindeutig). nummer: Rechnungsnummer genau wie gedruckt.',
       'inhalt: worum es geht, kurz in höchstens 8 Wörtern (z. B. „PLA-Filament 10 kg“, „Telefon/Internet Oktober“, „Webhosting 2027“).',
       'datum: Rechnungsdatum als JJJJ-MM-TT (nicht Liefer- oder Fälligkeitsdatum), leer wenn unbekannt. betrag: Gesamtbetrag brutto als Zahl mit Punkt, null wenn unbekannt. waehrung: z. B. EUR.',
-      `Rechnungsempfänger ist ${owner}. Seine Firmen: ${companies.join(', ')} (Textil-/Tassendruck, Werbetechnik, 3D-Druck).`,
+      owner || companies.length ? `Rechnungsempfänger ist ${owner || 'der Inhaber'}.${companies.length ? ` Seine Firmen/Marken: ${companies.join(', ')}.` : ''}` : 'Rechnungsempfänger ist der Inhaber des Betriebs.',
       `zuordnung: „firma“, wenn eine dieser Firmen in der Anschrift steht oder der Inhalt eindeutig gewerblich ist (Material, Maschinen, Druck, Software, Versand, Werbung, Webhosting); dann firma = Name der Firma aus der Liste, sonst leer.`,
-      `„privat“, wenn nur „${owner}“ ohne Firma dasteht und der Inhalt eindeutig privat ist (Streaming, Kleidung, private Versicherung, Lebensmittel, Urlaub). „unklar“, wenn du es nicht sicher sagen kannst – lieber unklar als falsch.`,
-      'Beachte die Beispiele: so hat Michael ähnliche Belege selbst geprüft und korrigiert – Schreibweise des Lieferanten und Zuordnung übernehmen.',
+      `„privat“, wenn nur ${owner ? `„${owner}“` : 'ein Personenname'} ohne Firma dasteht und der Inhalt eindeutig privat ist (Streaming, Kleidung, private Versicherung, Lebensmittel, Urlaub). „unklar“, wenn du es nicht sicher sagen kannst – lieber unklar als falsch.`,
+      'Beachte die Beispiele: so wurden ähnliche Belege selbst geprüft und korrigiert – Schreibweise des Lieferanten und Zuordnung übernehmen.',
       'grund: höchstens 10 Wörter. Antworte nur mit JSON.'
     ].join('\n') },
     ...shots,
@@ -170,10 +173,10 @@ async function kiExtract (cfg, { from, subject, text, fileName, examples }) {
   }
 }
 
-// Steht eine der Firmen (z. B. „Michael Zatti – Flexisticker“) im Beleg? → geschäftlich + Marke
+// Steht eine der eigenen Firmen (z. B. „Max Muster – Musterdruck“) im Beleg? → geschäftlich + Marke
 const flat = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9äöüß]+/g, ' ')
 export function detectCompany (text, cfg) {
-  // Mail- und Web-Adressen zählen nicht (rechnung@flexisticker.de stünde sonst in jeder Mail)
+  // Mail- und Web-Adressen zählen nicht (rechnung@eigene-firma.de stünde sonst in jeder Mail)
   const clean = String(text || '').replace(/[^\s<>()"',;]+@[^\s<>()"',;]+/g, ' ')
     .replace(/(?:https?:\/\/|www\.)\S+/gi, ' ')
     .replace(/\b[\w-]+\.(?:de|com|net|org|eu|shop|io|info|at|ch|biz)\b/gi, ' ')
@@ -185,7 +188,7 @@ export function detectCompany (text, cfg) {
     if (k.trim().length < 3) continue
     let i = t.indexOf(k)
     while (i >= 0) {
-      // Abstand zum Namen des Inhabers – die Firma direkt neben „Michael Zatti“ gewinnt
+      // Abstand zum Namen des Inhabers – die Firma direkt neben dem Namen gewinnt
       const near = owner ? Math.min(...[t.lastIndexOf(owner, i), t.indexOf(owner, i)].filter(x => x >= 0).map(x => Math.abs(x - i)), 9999) : 9999
       if (!best || near < best.near) best = { company: c, near }
       i = t.indexOf(k, i + 1)
@@ -472,13 +475,39 @@ function moveScanFile (dir, file, sub) {
   fs.renameSync(file, dest)
 }
 
+// Windows-Dienst: Netzwerkfreigabe (\\\\Server\\Freigabe) mit Benutzer/Passwort verbinden – Laufwerksbuchstaben sieht der Dienst nicht
+let shareConnected = ''
+async function ensureShare (dir, cfg) {
+  if (PLATFORM !== 'windows' || !/^\\\\[^\\]+\\[^\\]+/.test(dir) || !cfg.invoices.scanUser) return
+  const share = dir.match(/^\\\\[^\\]+\\[^\\]+/)[0]
+  if (shareConnected === share && fs.existsSync(dir)) return
+  const pw = getSecret('scanPassword')
+  await new Promise((resolve) => execFile('net', ['use', share, pw, `/user:${cfg.invoices.scanUser}`, '/persistent:no'], { windowsHide: true, timeout: 20000 }, () => resolve()))
+  shareConnected = share
+}
+
+// „Ordner prüfen“ in den Einstellungen: erreichbar, lesbar, beschreibbar (für erledigt/)?
+export async function checkScanDir () {
+  const cfg = getConfig()
+  const dir = cfg.invoices.scanDir
+  if (!dir) throw new Error('Kein Ordner eingetragen.')
+  if (PLATFORM === 'windows' && /^[a-z]:/i.test(dir) && !/^c:/i.test(dir) && !fs.existsSync(dir)) throw new Error(`${dir} nicht gefunden – Laufwerksbuchstaben von Netzlaufwerken sieht der Dienst nicht, bitte \\\\Server\\Freigabe verwenden.`)
+  await ensureShare(dir, cfg)
+  if (!fs.existsSync(dir)) throw new Error(`${dir} nicht gefunden oder kein Zugriff.`)
+  const pdfs = fs.readdirSync(dir).filter(n => /\.pdf$/i.test(n)).length
+  const probe = path.join(dir, '.mail-sortierer-test')
+  fs.writeFileSync(probe, 'ok'); fs.unlinkSync(probe)
+  return { pdfs }
+}
+
 export async function processScans (ctx, stats) {
   const cfg = getConfig()
   const target = collecting(cfg)
   if (!cfg.invoices.scanEnabled || !target) return
   if (target.mode !== 'live') return
   const dir = cfg.invoices.scanDir
-  if (!dir || !fs.existsSync(dir)) { stats.scanError = `Scanner-Ordner ${dir} nicht gefunden`; return }
+  if (dir) await ensureShare(dir, cfg).catch(() => {})
+  if (!dir || !fs.existsSync(dir)) { stats.scanError = `Scanner-Ordner ${dir || '(nicht eingetragen)'} nicht gefunden`; return }
   const files = fs.readdirSync(dir, { withFileTypes: true })
     .filter(d => d.isFile() && /\.pdf$/i.test(d.name) && !d.name.startsWith('.'))
     .map(d => path.join(dir, d.name))
@@ -595,6 +624,7 @@ export async function lexwareTest () {
 }
 
 export async function toAccounting (ids) {
+  if (!licensedFull()) throw new Error('Ohne gültige Lizenz geht nichts an Lexware (Einstellungen → Lizenz).')
   const done = []; const errors = []
   const list = ids.map(getInvoice).filter(i => i && ['open', 'error', 'private', 'noinvoice'].includes(i.status))
   if (!list.length) return { done, errors }

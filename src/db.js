@@ -118,7 +118,7 @@ function addColumn (table, col, type) {
 }
 addColumn('mails', 'risk', 'INTEGER')          // Punktzahl der Sicherheitsprüfung
 addColumn('mails', 'risk_reasons', 'TEXT')     // Gründe (JSON)
-addColumn('invoices', 'brand', 'TEXT')         // Firma/Marke (z. B. Flexisticker, 3dbymicha)
+addColumn('invoices', 'brand', 'TEXT')         // eigene Firma/Marke, an die die Rechnung ging
 addColumn('invoices', 'risk', 'TEXT')
 addColumn('invoices', 'content', 'TEXT')       // worum es geht (kurz)
 addColumn('invoices', 'text_snippet', 'TEXT')  // Textanfang des Belegs – für Lernbeispiele
