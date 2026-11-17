@@ -7,7 +7,7 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
 
 - Outlook-Postfach (Alfahosting, **IMAP**) aufräumen mit **lokaler KI** – Kundendaten dürfen das Haus nicht verlassen.
   Ollama läuft auf Michaels Unraid mit **GTX 1060** → Standardmodell `qwen2.5:7b` (3-GB-Karte: `qwen2.5:3b`).
-- Nie löschen, nur verschieben; unsicher = bleibt im Posteingang. Start im **Probelauf**.
+- Nie löschen, nur verschieben (Ausnahme seit 1.7.0: Aufräumen von Spam/Verdacht, nur wenn eingestellt); unsicher = bleibt im Posteingang. Start im **Probelauf**.
 - Lernen aus Korrekturen (Outlook-Verschiebungen werden erkannt) – Modell wird nicht trainiert, sondern Regeln + Beispiele (Few-Shot).
 - **Schritt 2 = gebaut in 1.1.0** (Details unten unter Stand). Ursprünglicher Plan: Eingangsrechnungen aus Mails + Scanner-Ordner (Unraid-Freigabe), lokale KI prüft
   „Rechnung? geschäftlich?“, E-Rechnungen (ZUGFeRD/XRechnung) exakt aus XML, Doppel-Erkennung (Mail + Scan),
@@ -118,3 +118,8 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Anzeige des automatisch genutzten DNS (`dns.getServers()`), Knopf „Speichern & Sperrlisten testen“ (`testBlocklists`: offizielle Testeinträge 127.0.0.2,
   dbltest.com, surbl-org-permanent-test-point.com → funktioniert/gesperrt/keine Antwort). Hinweis: Spamhaus braucht einen selbst auflösenden DNS (Pi-hole+Unbound);
   die UDM leitet meist nur weiter. Getestet mit nachgebautem DNS-Server, **nicht** mit echtem Spamhaus (Sandbox ohne DNS).
+- **1.7.0:** Wunsch Michael: Spam- und Verdacht-Mails löschen. `src/cleanup.js`: `config.cleanup {spam, verdacht (Tage, 0 = nie, Standard), mode trash|delete}`,
+  nur scharfe Postfächer mit Lizenz, im Durchlauf nach `processInbox`. Frist zählt ab Erstsichtung im Ordner (kv `cleanupSeen[acc][pfad] {uv, first{uid: ms}}`),
+  Mails mit Fähnchen bleiben, max. 500 je Ordner und Lauf. Papierkorb = Sonderordner `\Trash`, sonst Name (Trash/Papierkorb/Gelöschte Elemente …), keiner → Warnung, nichts passiert.
+  „… jetzt leeren“ (Einstellungen → Sicherheit) = kv `cleanupNow` + `runOnce`. Datensätze `status 'deleted'` („Aufgeräumt“), Papierkorb-Fall mit `folder` = Papierkorb
+  (dann geht „ist harmlos“/Korrektur noch, `correct()` sucht per Message-ID), endgültig = ohne folder. Getestet gegen GreenMail (Frist, Fähnchen, Papierkorb, endgültig, Datensatz), Einstellungen 1280/390.

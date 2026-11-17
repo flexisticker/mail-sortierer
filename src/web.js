@@ -17,6 +17,7 @@ import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reope
 import { withClient, listFolders } from './imap.js'
 import { listModels } from './ollama.js'
 import { parseDnsServers, systemDnsServers, testBlocklists } from './security.js'
+import { cleanupCfg, requestEmpty } from './cleanup.js'
 import { classify } from './classify.js'
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public')
@@ -312,7 +313,7 @@ export function createApp () {
           <div class="muted small">${esc(SOURCE_LABEL[r.source] || r.source || '')}${r.confidence != null && r.source === 'ki' ? ` · ${r.confidence} %` : ''}${r.reason ? ' · ' + esc(r.reason) : ''}</div>
           ${r.error ? `<div class="bad small">${esc(r.error)}</div>` : ''}
           ${riskBox(r)}</td>
-        <td class="nowrap">${r.status === 'gone' ? '' : `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}">
+        <td class="nowrap">${r.status === 'gone' || (r.status === 'deleted' && !r.folder) ? '' : `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}">
             <select name="target" aria-label="Richtiger Ordner">${options(targets, r.decision)}</select><button class="btn sm">Ändern</button></form>
           ${(r.decision === 'verdacht' || r.decision === 'spam') && r.status !== 'gone' ? `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="target" value="inbox"><button class="btn sm" data-confirm="Absender ${esc(r.from_addr)} als vertrauenswürdig merken und die Mail in den Posteingang legen?">ist harmlos</button></form>` : ''}
           ${['planned', 'moved', 'kept'].includes(r.status) && r.source !== 'correction' && r.source !== 'security' ? `<form method="post" action="/mails/${r.id}/passt" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><button class="btn sm ghost" title="Richtig – zählt für eine feste Regel">passt</button></form>` : ''}`}</td>
@@ -779,7 +780,18 @@ export function createApp () {
         <label class="span">Weitere oft gefälschte Absender (je Zeile „Name = domain.de, domain2.de“)<textarea name="brands" rows="2" maxlength="2000" placeholder="Meine Bank = meinebank.de">${esc(cfg.security.brands)}</textarea></label>
         <p class="muted small span">Spamhaus und SURBL sind für kleine Mengen kostenlos. Fehlalarm? In der Mailliste „ist harmlos“ klicken oder die Mail in Outlook aus dem Ordner ziehen – der Absender gilt dann als vertrauenswürdig.</p>
         <div class="row span"><button class="btn primary">Speichern</button><button class="btn" name="next" value="test">Speichern &amp; Sperrlisten testen</button></div>
-      </form></section>
+      </form>
+      ${(() => { const cc = cleanupCfg(cfg); return `<h3 id="aufraeumen">Spam und Verdacht aufräumen</h3>
+      <p class="muted">Standard: nie. Gezählt wird ab dem Tag, an dem die Mail im Ordner liegt – du hast also immer die volle Frist zum Nachsehen. Mails mit Fähnchen bleiben. Gilt nur für scharf geschaltete Postfächer.</p>
+      <form method="post" action="/einstellungen/aufraeumen" class="form two">${csrf(s)}
+        <label>„${esc(targetLabel('spam', cfg))}“ aufräumen nach … Tagen (0 = nie)<input name="spam" type="number" min="0" max="3650" value="${cc.spam}"></label>
+        <label>„${esc(targetLabel('verdacht', cfg))}“ aufräumen nach … Tagen (0 = nie)<input name="verdacht" type="number" min="0" max="3650" value="${cc.verdacht}"></label>
+        <label class="check span"><input type="radio" name="mode" value="trash"${cc.mode === 'trash' ? ' checked' : ''}> <span>In den Papierkorb des Postfachs legen (empfohlen – dort noch wiederherstellbar)</span></label>
+        <label class="check span"><input type="radio" name="mode" value="delete"${cc.mode === 'delete' ? ' checked' : ''}> <span>Endgültig löschen (nicht wiederherstellbar)</span></label>
+        <div class="row span"><button class="btn primary">Speichern</button>
+          <button class="btn" name="leeren" value="spam" data-confirm="Alle Mails im Ordner „${esc(targetLabel('spam', cfg))}“ (ohne Fähnchen) in allen scharf geschalteten Postfächern jetzt ${cc.mode === 'delete' ? 'ENDGÜLTIG LÖSCHEN' : 'in den Papierkorb legen'}?">„${esc(targetLabel('spam', cfg))}“ jetzt leeren</button>
+          <button class="btn" name="leeren" value="verdacht" data-confirm="Alle Mails im Ordner „${esc(targetLabel('verdacht', cfg))}“ (ohne Fähnchen) in allen scharf geschalteten Postfächern jetzt ${cc.mode === 'delete' ? 'ENDGÜLTIG LÖSCHEN' : 'in den Papierkorb legen'}?">„${esc(targetLabel('verdacht', cfg))}“ jetzt leeren</button></div>
+      </form>` })()}</section>
 
     <section class="card" id="konto"><h2>Konto</h2>
       <form method="post" action="/einstellungen/passwort" class="form two">${csrf(s)}
@@ -971,6 +983,20 @@ export function createApp () {
     if (!t.results.some(r => r.state === 'blocked')) setStatus({ dnsWarning: null })
     const via = `DNS ${t.auto ? 'automatisch ' : ''}${t.servers.join(', ')}`
     back(res, '/einstellungen#sicherheit', bad ? { err: `Gespeichert. Test über ${via} – ${lines}` } : { msg: `Gespeichert. Test über ${via} – ${lines}` })
+  })
+
+  app.post('/einstellungen/aufraeumen', (req, res) => {
+    const b = req.body
+    const cleanup = { spam: int(b.spam, 0, 3650, 0), verdacht: int(b.verdacht, 0, 3650, 0), mode: b.mode === 'delete' ? 'delete' : 'trash' }
+    saveConfig({ cleanup })
+    const cat = b.leeren === 'spam' || b.leeren === 'verdacht' ? b.leeren : null
+    if (!cat) return back(res, '/einstellungen#aufraeumen', { msg: 'Gespeichert.' })
+    const live = listAccounts().filter(a => a.enabled && a.mode === 'live')
+    if (!live.length) return back(res, '/einstellungen#aufraeumen', { err: 'Kein Postfach ist scharf geschaltet – im Probelauf wird nichts gelöscht.' })
+    for (const a of live) requestEmpty(a.id, cat)
+    log('info', `„${targetLabel(cat, getConfig())}“ leeren angefordert (${cleanup.mode === 'delete' ? 'endgültig' : 'Papierkorb'})`)
+    runOnce('Ordner leeren')
+    back(res, '/einstellungen#aufraeumen', { msg: `Wird beim Durchlauf erledigt (gerade gestartet) – Ergebnis im Protokoll.` })
   })
 
   app.post('/einstellungen/passwort', async (req, res) => {

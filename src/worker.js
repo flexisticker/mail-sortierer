@@ -9,6 +9,7 @@ import { recordCorrection, addExample, learnSender, isTrusted, isKnown } from '.
 import { phishCheck, brandList, blocklistCheck, senderIp, pdfRisk } from './security.js'
 import { handleMailInvoice, processScans, collecting, dropForMail } from './invoice.js'
 import { licensedFull } from './license.js'
+import { cleanupAccount } from './cleanup.js'
 
 const MAX_RUN_MS = 20 * 60 * 1000
 const byMsgid = db.prepare('SELECT * FROM mails WHERE account_id = ? AND msgid = ?')
@@ -267,6 +268,9 @@ async function run (why) {
         }
         await watchFolders(acc, client, map, existing, stats)
         const left = await processInbox(ctx, acc, client, cfg, map, stats, started, Math.max(5, budget))
+        if (acc.mode === 'live') {
+          try { await cleanupAccount(acc, client, cfg, map, existing, stats, accountLabel(acc)) } catch (e) { log('error', `${accountLabel(acc)}: Aufräumen fehlgeschlagen: ${e.message}`) }
+        }
         budget = Math.max(5, budget - stats.read)
         setAccStatus(acc.id, { lastOk: now(), lastError: null, left, last: stats })
         total.left += left
@@ -283,8 +287,8 @@ async function run (why) {
       try { await processScans(ctx, total) } catch (e) { failed = 'Scanner: ' + e.message; log('error', failed) }
     }
     const msg = `Durchlauf (${why}): ${total.read} gelesen, ${total.moved} verschoben, ${total.planned} im Probelauf vorgemerkt, ${total.kept} bleiben im Posteingang, ${total.corrections} Korrekturen` +
-      (total.invoices ? `, ${total.invoices} Rechnungen` : '') + (total.suspicious ? `, ${total.suspicious} verdächtig` : '') + (total.spam ? `, ${total.spam} Spam` : '') + (total.scans ? `, ${total.scans} Scans` : '') + (total.errors ? `, ${total.errors} Fehler` : '') + (total.left > 0 ? `, ${total.left} warten noch` : '')
-    if (total.read || total.moved || total.corrections || total.errors || total.scans) log(total.errors ? 'warn' : 'info', msg)
+      (total.invoices ? `, ${total.invoices} Rechnungen` : '') + (total.suspicious ? `, ${total.suspicious} verdächtig` : '') + (total.spam ? `, ${total.spam} Spam` : '') + (total.scans ? `, ${total.scans} Scans` : '') + (total.deleted ? `, ${total.deleted} aufgeräumt` : '') + (total.errors ? `, ${total.errors} Fehler` : '') + (total.left > 0 ? `, ${total.left} warten noch` : '')
+    if (total.read || total.moved || total.corrections || total.errors || total.scans || total.deleted) log(total.errors ? 'warn' : 'info', msg)
     setStatus({ running: false, lastEnd: now(), lastOk: failed ? undefined : now(), lastError: failed || total.scanError || null, dnsWarning: total.dnsWarning || null, last: total, backlogLeft: total.left })
   } catch (e) {
     const text = String((e && (e.responseText || e.message)) || e)
@@ -310,7 +314,7 @@ export async function correct (id, target) {
   recordCorrection(rec, target, 'ui')
   if (rec.decision === 'rechnungen' && target !== 'rechnungen') await dropForMail(rec.id)
   const base = { decision: target, source: 'correction', reason: 'korrigiert', confidence: null, error: null }
-  if (rec.status === 'gone') { upd(id, base); return }
+  if (rec.status === 'gone' || (rec.status === 'deleted' && !rec.folder)) { upd(id, base); return }
   const inInbox = !rec.folder || rec.folder === 'INBOX'
   if (inInbox && (acc.mode !== 'live' || target === 'inbox')) { upd(id, { ...base, status: target === 'inbox' ? 'kept' : 'planned' }); return }
   if (inInbox && target === 'rechnungen' && collecting()) { upd(id, { ...base, status: 'planned' }); return } // nächster Durchlauf legt die Rechnung ab

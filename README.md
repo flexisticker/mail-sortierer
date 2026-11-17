@@ -1,7 +1,7 @@
 # Mail-Sortierer
 
 Sortiert das IMAP-Postfach mit einer **lokalen KI (Ollama)** in Ordner und lernt aus deinen Korrekturen.
-Kein Mailinhalt verlässt dein Netz. **Es wird nie etwas gelöscht** – nur verschoben.
+Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur verschoben (außer du schaltest das Aufräumen von Spam/Verdacht ein).
 
 ## Was er macht
 
@@ -38,6 +38,7 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nie etwas gelöscht** – nur ver
   dazu die Einschätzung der lokalen KI. Punktzahl ≥ Schwelle → Ordner **„Achtung Verdacht“**.
 - **Spam:** Spam-Kennzeichnung des Mailservers und Sperrlisten (Spamhaus ZEN/DBL, SpamCop, SURBL per DNS – es gehen nur
   IP-Adresse/Domain an den Betreiber, nie Inhalte) → Ordner **„Spam“**.
+- Optional aufräumen: Spam/Verdacht nach X Tagen in den Papierkorb oder endgültig löschen (Standard: nie), Mails mit Fähnchen bleiben.
 - DNS-Server für die Sperrlisten einstellbar (Spamhaus lehnt öffentliche DNS-Server ab), mit Test-Knopf.
 - Fehlalarm: „ist harmlos“ bzw. Mail in Outlook herausziehen → Absender gilt als vertrauenswürdig.
 - Eigene Ordner mit Beschreibung für die KI (Einstellungen → Ordner).

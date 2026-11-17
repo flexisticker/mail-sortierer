@@ -1,7 +1,7 @@
 // Kleine HTML-Helfer für die serverseitig erzeugten Seiten (alles maskiert).
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const VERSION = process.env.APP_VERSION || '1.6.0'
+export const VERSION = process.env.APP_VERSION || '1.7.0'
 
 const NAV = [
   ['/', 'Übersicht'],
@@ -51,7 +51,8 @@ export const STATUS_LABEL = {
   kept: 'Bleibt im Posteingang',
   undone: 'Rückgängig',
   error: 'Fehler',
-  gone: 'Nicht mehr da'
+  gone: 'Nicht mehr da',
+  deleted: 'Aufgeräumt'
 }
 
 export const SOURCE_LABEL = {

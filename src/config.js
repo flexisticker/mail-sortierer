@@ -46,6 +46,7 @@ export const DEFAULT_CONFIG = {
     dnsServer: '',           // DNS-Server für die Sperrlisten, leer = automatisch (wie das System)
     spamHeader: true         // Spam-Kennzeichnung des Mailservers (X-Spam-Flag) übernehmen
   },
+  cleanup: { spam: 0, verdacht: 0, mode: 'trash' }, // Tage im Ordner, 0 = nie aufräumen
   business: { name: '', description: '' }, // Betrieb – nur als Hintergrund für die KI
   ollama: { url: PLATFORM === 'windows' ? 'http://localhost:11434' : '', model: 'qwen2.5:7b', timeoutSec: 120, numCtx: 4096 },
   root: 'Sortiert',
