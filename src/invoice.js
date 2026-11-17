@@ -7,6 +7,7 @@ import { simpleParser } from 'mailparser'
 import { db, now, log, DATA_DIR, kvGet, kvSet } from './db.js'
 import { getConfig, companyList } from './config.js'
 import { pdfStreams, pdfRisk, scanAttachment } from './security.js'
+import { FREEMAIL } from './learn.js'
 import { chatJson } from './ollama.js'
 import { getAccount, accountLabel } from './accounts.js'
 import { withClient, ensurePath, appendMessage, moveMessage, findByMsgId, pathString } from './imap.js'
@@ -124,9 +125,17 @@ const INV_SCHEMA = {
   required: ['ist_rechnung', 'lieferant', 'nummer', 'datum', 'betrag', 'waehrung', 'inhalt', 'zuordnung', 'firma', 'grund']
 }
 
-async function kiExtract (cfg, { from, subject, text, fileName }) {
+async function kiExtract (cfg, { from, subject, text, fileName, examples }) {
   const companies = companyList(cfg)
   const owner = cfg.invoices.ownerName || 'Michael Zatti'
+  const shots = []
+  for (const x of examples || []) {
+    shots.push({ role: 'user', content: `Von: ${x.from_addr || '-'}\nInhalt:\n${String(x.snippet || '').slice(0, 800)}` })
+    shots.push({ role: 'assistant', content: JSON.stringify({
+      ist_rechnung: x.decision !== 'noinvoice', lieferant: x.supplier || '', nummer: x.number || '', datum: x.inv_date || '', betrag: x.amount ?? null, waehrung: 'EUR',
+      inhalt: x.content || '', zuordnung: x.decision === 'private' ? 'privat' : x.brand || x.decision === 'business' ? 'firma' : 'unklar', firma: x.brand || '',
+      grund: 'So hat Michael es geprüft.' }) })
+  }
   const r = await chatJson(cfg, [
     { role: 'system', content: [
       'Du liest Rechnungen für Flexisticker (Textil- und Tassendruck, Inhaber Michael) aus.',
@@ -137,8 +146,10 @@ async function kiExtract (cfg, { from, subject, text, fileName }) {
       `Rechnungsempfänger ist ${owner}. Seine Firmen: ${companies.join(', ')} (Textil-/Tassendruck, Werbetechnik, 3D-Druck).`,
       `zuordnung: „firma“, wenn eine dieser Firmen in der Anschrift steht oder der Inhalt eindeutig gewerblich ist (Material, Maschinen, Druck, Software, Versand, Werbung, Webhosting); dann firma = Name der Firma aus der Liste, sonst leer.`,
       `„privat“, wenn nur „${owner}“ ohne Firma dasteht und der Inhalt eindeutig privat ist (Streaming, Kleidung, private Versicherung, Lebensmittel, Urlaub). „unklar“, wenn du es nicht sicher sagen kannst – lieber unklar als falsch.`,
+      'Beachte die Beispiele: so hat Michael ähnliche Belege selbst geprüft und korrigiert – Schreibweise des Lieferanten und Zuordnung übernehmen.',
       'grund: höchstens 10 Wörter. Antworte nur mit JSON.'
     ].join('\n') },
+    ...shots,
     { role: 'user', content: `Von: ${from || '-'}\nBetreff: ${subject || '-'}\nDatei: ${fileName || '-'}\nInhalt:\n${String(text || '(kein Text lesbar)').slice(0, 4000)}` }
   ], INV_SCHEMA)
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(r.datum || '')) ? r.datum : ''
@@ -208,6 +219,41 @@ function learnDecision (inv, kind) {
   kvSet('invoiceDecisions', all)
 }
 
+const domainOf = (addr) => String(addr || '').toLowerCase().split('@')[1] || ''
+const realSender = (addr) => addr && addr.includes('@') ? addr.toLowerCase() : ''
+
+// Jede Prüfung wird gemerkt: als Beispiel für die KI und als feste Zuordnung Absender → Lieferantenname/Firma
+export function invLearn (inv, decision) {
+  const from = realSender(inv.from_addr)
+  const domain = domainOf(from)
+  db.prepare(`INSERT INTO inv_examples (invoice_id, from_addr, domain, supplier, brand, number, inv_date, amount, content, decision, snippet, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(inv.id ?? null, from || null, domain || null, inv.supplier || '', inv.brand || '', inv.number || '', inv.inv_date || '',
+    inv.amount ?? null, inv.content || '', decision, String(inv.text_snippet || inv.subject || '').slice(0, 800), now())
+  db.prepare('DELETE FROM inv_examples WHERE id NOT IN (SELECT id FROM inv_examples ORDER BY id DESC LIMIT 2000)').run()
+  if (decision === 'business' || decision === 'private' || decision === 'noinvoice') learnDecision(inv, decision)
+  // Absender/Domain → so heißt der Lieferant, diese Firma (nur bei echten Absendern, nicht bei Scans)
+  if (from && decision !== 'noinvoice') {
+    const al = kvGet('supplierAlias', {})
+    const val = { supplier: inv.supplier || '', brand: decision === 'private' ? '' : (inv.brand || ''), private: decision === 'private', at: now() }
+    al['m:' + from] = { ...(al['m:' + from] || {}), ...val }
+    if (domain && !FREEMAIL.has(domain)) al['d:' + domain] = { ...(al['d:' + domain] || {}), ...val }
+    kvSet('supplierAlias', al)
+  }
+}
+export function aliasFor (from) {
+  const al = kvGet('supplierAlias', {})
+  const f = realSender(from)
+  return al['m:' + f] || (domainOf(f) && !FREEMAIL.has(domainOf(f)) ? al['d:' + domainOf(f)] : null) || null
+}
+function invExamplesFor (from) {
+  const f = realSender(from)
+  if (!f) return []
+  return db.prepare("SELECT * FROM inv_examples WHERE (from_addr = ? OR domain = ?) AND snippet <> '' ORDER BY id DESC LIMIT 3").all(f, FREEMAIL.has(domainOf(f)) ? '-' : domainOf(f))
+}
+export function forgetInvoiceLearning (id) {
+  db.prepare('DELETE FROM inv_examples WHERE id = ?').run(Number(id))
+}
+
 const safeName = (s) => String(s || 'rechnung').normalize('NFKC').replace(/[^\w.äöüÄÖÜß() -]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 100) || 'rechnung'
 
 function storeFile (buf, name, ym) {
@@ -266,7 +312,7 @@ export async function analyze (cfg, { source, pdf, pdfName, from, subject, mailD
   const text2 = pdfBuf ? await pdfText(pdfBuf) : ''
   let k = null
   try {
-    k = await kiExtract(cfg, { from, subject, text: (text2 ? `[PDF] ${text2}\n[Mail] ` : '') + String(bodyText || '').slice(0, 1500), fileName })
+    k = await kiExtract(cfg, { from, subject, text: (text2 ? `[PDF] ${text2}\n[Mail] ` : '') + String(bodyText || '').slice(0, 1500), fileName, examples: invExamplesFor(from) })
   } catch (err) {
     if (!e) throw err // ohne E-Rechnung brauchen wir die KI
   }
@@ -284,8 +330,16 @@ export async function analyze (cfg, { source, pdf, pdfName, from, subject, mailD
     pdf: pdfBuf, fileName, xml: xml && e ? xml : ''
   }
   info.ym = ymOf(info.date, mailDate)
-  // Firma: zuerst wörtlich im Beleg/der Mail suchen, sonst Einschätzung der KI
-  info.brand = detectCompany(`${text2}\n${bodyText}\n${toLine || ''}\n${xml || ''}`, cfg) || (k && k.assignment === 'firma' ? k.company : '')
+  info.snippet = String(text2 || bodyText || '').replace(/\s+/g, ' ').trim().slice(0, 800)
+  // Firma: zuerst wörtlich im Beleg/der Mail suchen, dann Gelerntes zum Absender, sonst Einschätzung der KI
+  const alias = aliasFor(from)
+  info.brand = detectCompany(`${text2}\n${bodyText}\n${toLine || ''}\n${xml || ''}`, cfg)
+  if (alias) {
+    if (alias.supplier) info.supplier = alias.supplier
+    if (!info.brand && alias.brand) { info.brand = alias.brand; info.reason = 'wie bisher bei diesem Absender' }
+    if (!info.brand && alias.private) { info.assignment = 'privat'; info.reason = 'bisher immer privat' }
+  }
+  if (!info.brand && k && k.assignment === 'firma' && (!alias || !alias.private)) info.brand = k.company
   // Sicherheit: riskante PDF/Anhänge → Beleg gesperrt
   info.risk = []
   if (pdfBuf) info.risk.push(...pdfRisk(pdfBuf))
@@ -296,11 +350,11 @@ export async function analyze (cfg, { source, pdf, pdfName, from, subject, mailD
 function insertInvoice (f) {
   const t = now()
   const r = db.prepare(`INSERT INTO invoices (source, account_id, mail_id, msgid, from_addr, subject, supplier, number, inv_date, amount, currency, einvoice,
-    file, file_name, file_hash, xml_file, dedupe, folder, uid, same_message, suggestion, hint, status, created_at, updated_at, brand, risk, content)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    file, file_name, file_hash, xml_file, dedupe, folder, uid, same_message, suggestion, hint, status, created_at, updated_at, brand, risk, content, text_snippet)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(f.source, f.account_id ?? null, f.mail_id ?? null, f.msgid ?? null, f.from_addr ?? null, f.subject ?? null, f.supplier || '', f.number || '', f.inv_date || '',
       f.amount ?? null, f.currency || 'EUR', f.einvoice || '', f.file ?? null, f.file_name ?? null, f.file_hash ?? null, f.xml_file ?? null, f.dedupe ?? null,
-      f.folder ?? null, f.uid ?? null, f.same_message ? 1 : 0, f.suggestion ?? null, f.hint ?? null, f.status, t, t, f.brand || null, f.risk ? JSON.stringify(f.risk) : null, f.content || null)
+      f.folder ?? null, f.uid ?? null, f.same_message ? 1 : 0, f.suggestion ?? null, f.hint ?? null, f.status, t, t, f.brand || null, f.risk ? JSON.stringify(f.risk) : null, f.content || null, f.text_snippet || null)
   return byId.get(Number(r.lastInsertRowid))
 }
 
@@ -337,7 +391,7 @@ export async function handleMailInvoice (ctx, acc, rec, client) {
   if (info.risk.length) {
     // Gefährlicher Beleg: nicht kopieren, nicht ablegen – Mail kommt nach „Achtung Verdacht“
     insertInvoice({ source: 'mail', account_id: acc.id, mail_id: rec.id, msgid: rec.msgid, from_addr: rec.from_addr, subject: rec.subject, ...storeDocs(info), brand: info.brand,
-      supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, amount: info.amount, currency: info.currency, status: 'blocked', risk: info.risk, hint: 'Beleg gesperrt: ' + info.risk.join('; ') })
+      supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, text_snippet: info.snippet, amount: info.amount, currency: info.currency, status: 'blocked', risk: info.risk, hint: 'Beleg gesperrt: ' + info.risk.join('; ') })
     log('warn', `Rechnung „${rec.subject}“ von ${rec.from_addr} gesperrt: ${info.risk.join('; ')}`)
     return { blocked: 'Gefährlicher Rechnungsanhang: ' + info.risk.join('; ') }
   }
@@ -346,7 +400,7 @@ export async function handleMailInvoice (ctx, acc, rec, client) {
   const dup = findDuplicate(docs.file_hash, key)
   const base = {
     source: 'mail', account_id: acc.id, mail_id: rec.id, msgid: rec.msgid, from_addr: rec.from_addr, subject: rec.subject,
-    supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, amount: info.amount, currency: info.currency, einvoice: info.einvoice,
+    supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, text_snippet: info.snippet, amount: info.amount, currency: info.currency, einvoice: info.einvoice,
     ...docs, dedupe: key, brand: info.brand, suggestion: suggestionFor(info, rec.from_addr), hint: info.isInvoice ? info.reason : 'KI: eher keine Rechnung – bitte prüfen'
   }
   if (dup) {
@@ -434,7 +488,7 @@ export async function processScans (ctx, stats) {
       const msgid = `<scan-${hash.slice(0, 24)}@mail-sortierer.invalid>`
       const info = await analyze(cfg, { pdf, pdfName: name, from: 'Scanner', subject: name, mailDate: fs.statSync(file).mtime })
       if (info.risk.length) {
-        insertInvoice({ source: 'scan', msgid, from_addr: 'Scanner', subject: name, ...storeDocs(info), brand: info.brand, supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, amount: info.amount, status: 'blocked', risk: info.risk, hint: 'Datei gesperrt: ' + info.risk.join('; ') })
+        insertInvoice({ source: 'scan', msgid, from_addr: 'Scanner', subject: name, ...storeDocs(info), brand: info.brand, supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, text_snippet: info.snippet, amount: info.amount, status: 'blocked', risk: info.risk, hint: 'Datei gesperrt: ' + info.risk.join('; ') })
         moveScanFile(dir, file, 'gesperrt')
         log('warn', `Scan ${name} gesperrt: ${info.risk.join('; ')}`)
         continue
@@ -443,7 +497,7 @@ export async function processScans (ctx, stats) {
       const key = dedupeKey(info)
       const dup = findDuplicate(docs.file_hash, key)
       const base = {
-        source: 'scan', msgid, from_addr: 'Scanner', subject: name, supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, content: info.content,
+        source: 'scan', msgid, from_addr: 'Scanner', subject: name, supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, text_snippet: info.snippet, content: info.content, text_snippet: info.snippet,
         amount: info.amount, currency: info.currency, einvoice: info.einvoice, ...docs, dedupe: key, brand: info.brand,
         suggestion: suggestionFor(info, ''), hint: info.isInvoice ? info.reason : 'KI: eher keine Rechnung – bitte prüfen'
       }
@@ -548,7 +602,7 @@ export async function toAccounting (ids) {
           loc = await relocate(client, inv, inv.status === 'open' || inv.status === 'error' ? null : monthParts(cfg, ymOf(inv.inv_date, inv.created_at)), false)
         } catch (e) { log('warn', `Rechnung #${inv.id} an Lexware gesendet, aber Fähnchen nicht entfernt: ${e.message}`) }
         upd(inv.id, { status: 'sent', lexware_id: lexId, decided_at: now(), error: null, ...loc })
-        learnDecision(inv, 'business')
+        invLearn({ ...inv, ...getInvoice(inv.id) }, 'business')
         done.push(inv.id)
       } catch (e) {
         upd(inv.id, { error: String(e.message).slice(0, 300) })
@@ -568,7 +622,7 @@ export async function markPrivate (ids) {
       const ym = ymOf(inv.inv_date, inv.created_at)
       const loc = await relocate(client, inv, [cfg.invoices.root, cfg.invoices.privateName, ym.slice(0, 4)], false)
       upd(inv.id, { status: 'private', decided_at: now(), error: null, ...loc })
-      learnDecision(inv, 'private')
+      invLearn(getInvoice(inv.id), 'private')
     }
   })
   return list.length
@@ -581,6 +635,7 @@ export async function markNoInvoice (ids) {
     for (const inv of list) {
       const loc = inv.status === 'duplicate' ? {} : await relocate(client, inv, [cfg.invoices.root, cfg.invoices.noInvoiceName], false)
       upd(inv.id, { status: 'noinvoice', decided_at: now(), error: null, ...loc })
+      invLearn(getInvoice(inv.id), 'noinvoice')
     }
   })
   return list.length
@@ -628,6 +683,13 @@ export async function editInvoice (id, f) {
     loc = await withTarget(client => relocate(client, inv, monthParts(cfg, newYm), undefined))
   }
   upd(inv.id, { ...next, ...loc })
+  // Geänderte Angaben = Lernbeispiel (Lieferantenname, Firma, Inhalt … beim nächsten Mal so)
+  const changed = ['supplier', 'number', 'inv_date', 'amount', 'content', 'brand'].some(k => next[k] !== undefined && String(next[k] ?? '') !== String(inv[k] ?? ''))
+  if (changed) {
+    const cur = getInvoice(inv.id)
+    invLearn(cur, cur.brand ? 'business' : cur.status === 'private' ? 'private' : 'edit')
+    if (cur.brand && ['open', 'error'].includes(cur.status)) upd(cur.id, { suggestion: 'business' })
+  }
 }
 
 // Mail wurde in der Oberfläche von „Rechnungen“ weg korrigiert

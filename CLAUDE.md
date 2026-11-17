@@ -84,3 +84,10 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
     3dbymicha-Rechnung, „nur Michael Zatti“ → Prüfen, „ist harmlos“ → vertraut, echte DHL-Mail 0 Punkte, 1280/390 px.
     **Nicht getestet:** echte DNSBL-Abfragen (Sandbox ohne DNS; Spamhaus blockt öffentliche Resolver), echte Alfahosting-Header (Authentication-Results/X-Spam-*),
     echte Phishing-Mails, Ollama-Qualität bei „zuordnung“.
+- **1.3.0 (17.11.2026):** Wunsch Michael: „bei allen Mails, die ich prüfe und ändere, soll die KI lernen“.
+  Rechnungen: Tabelle `inv_examples` (+ Spalte `invoices.text_snippet`), `invLearn(inv, business|private|noinvoice|edit)` bei Lexware/Privat/Keine Rechnung
+  und bei „Angaben ändern“ (wenn sich etwas ändert). kv `supplierAlias` (`m:<absender>`, `d:<domain>` ohne Freemail) → Lieferantenname + Firma bzw. privat
+  werden bei neuen Belegen des Absenders übernommen (`aliasFor` in `analyze`), `kiExtract` bekommt bis zu 3 Beispiele desselben Absenders/der Domain.
+  Scans haben keinen Absender → lernen nur über die Lieferanten-Entscheidung. Gelernt-Seite: Abschnitt „Rechnungen – gelernt“ mit „vergessen“.
+  Mails: Knopf „Seite geprüft – alles passt (n)“ → `confirm()` für alle nicht geänderten Zeilen der Seite (Regel-Treffer + Beispiele).
+  Getestet (GreenMail + Mocks): Korrektur FS-3001 → neue Rechnung FS-3002 mit nur „Michael Zatti“ kommt als „Filament Shop / 3dbymicha“, KI bekam 1 Beispiel.

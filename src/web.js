@@ -11,7 +11,7 @@ import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
 import { runOnce, isRunning, getStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
-import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release, editInvoice, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
+import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release, editInvoice, forgetInvoiceLearning, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
 import { listModels } from './ollama.js'
 import { classify } from './classify.js'
@@ -297,7 +297,11 @@ export function createApp () {
       </tr>`).join('') || '<tr><td colspan="5" class="muted">Keine Mails.</td></tr>'}
       </tbody></table></div>
     <div class="row between">
+      <div class="row wrap">
+      ${(() => { const ok = rows.filter(r => ['planned', 'moved', 'kept'].includes(r.status) && !['correction', 'security', 'own'].includes(r.source) && !String(r.reason || '').endsWith('✓')); return ok.length ? `<form method="post" action="/mails/passt-alle">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}">${ok.map(r => `<input type="hidden" name="ids" value="${r.id}">`).join('')}
+        <button class="btn primary" data-confirm="Du hast diese Seite durchgesehen und alles, was du nicht geändert hast, ist richtig einsortiert? (${ok.length} Mails – zählt für Regeln und als Beispiele für die KI)">Seite geprüft – alles passt (${ok.length})</button></form>` : '' })()}
       <button class="btn" form="bulk" data-confirm="Ausgewählte Mails zurück in den Posteingang (bzw. Vorschlag verwerfen)?">Ausgewählte rückgängig</button>
+      </div>
       <div class="pager">${pageNo > 1 ? `<a class="btn sm" href="${esc(qs(pageNo - 1))}">‹ zurück</a>` : ''} Seite ${pageNo} von ${Math.max(1, Math.ceil(total / per))} ${pageNo * per < total ? `<a class="btn sm" href="${esc(qs(pageNo + 1))}">weiter ›</a>` : ''}</div>
     </div>`
     res.send(page({ title: 'Mails', body, session: s, path: '/mails', wide: true, ...flash(req) }))
@@ -315,6 +319,13 @@ export function createApp () {
   app.post('/mails/:id/passt', (req, res) => {
     try { confirm(int(req.params.id, 1, 1e12, 0)); back(res, safeBack(req.body.zurueck, req.body.anker), { msg: 'Bestätigt – gemerkt.' }) } catch (e) { back(res, safeBack(req.body.zurueck, req.body.anker), { err: errText(e) }) }
   })
+  app.post('/mails/passt-alle', (req, res) => {
+    const ids = [].concat(req.body.ids || []).map(x => int(x, 1, 1e12, 0)).filter(Boolean).slice(0, 200)
+    let n = 0
+    for (const id of ids) { try { confirm(id); n++ } catch { /* übersprungen */ } }
+    log('info', `${n} Mails als richtig bestätigt (Seite geprüft)`)
+    back(res, safeBack(req.body.zurueck), { msg: `${n} Mails als richtig gemerkt – danke, das hilft der KI.` })
+  })
   app.post('/mails/rueckgaengig', async (req, res) => {
     const ids = [].concat(req.body.ids || []).map(x => int(x, 1, 1e12, 0)).filter(Boolean).slice(0, 500)
     if (!ids.length) return back(res, safeBack(req.body.zurueck, req.body.anker), { err: 'Keine Mails ausgewählt.' })
@@ -327,6 +338,7 @@ export function createApp () {
     const s = req.session
     const rules = db.prepare("SELECT * FROM rules ORDER BY CASE state WHEN 'suggest' THEN 0 WHEN 'active' THEN 1 ELSE 2 END, updated_at DESC").all()
     const examples = db.prepare('SELECT * FROM examples ORDER BY id DESC LIMIT 150').all()
+    const invEx = db.prepare('SELECT * FROM inv_examples ORDER BY id DESC LIMIT 100').all()
     const contacts = db.prepare('SELECT target, COUNT(*) n FROM contacts GROUP BY target').all()
     const targets = [['inbox', 'Posteingang'], ...activeCategories(cfg).map(c => [c.id, c.name])]
     const STATE = { active: 'gilt', suggest: 'Vorschlag', off: 'aus' }
@@ -362,6 +374,16 @@ export function createApp () {
         <label>… oder Inhalt einfügen<textarea name="text" id="kontakte-text" rows="5" placeholder="kunde@firma.de; Max Muster&#10;info@lieferant.de"></textarea></label>
         <button class="btn primary">Übernehmen</button></form>
       ${contacts.length ? `<form method="post" action="/kontakte/loeschen" class="row">${csrf(s)}<select name="target">${options(contacts.map(c => [c.target, targetLabel(c.target, cfg)]), '')}</select><button class="btn ghost" data-confirm="Diese Kontaktliste löschen?">Liste löschen</button></form>` : ''}
+    </section>
+
+    <section class="card"><h2>Rechnungen – gelernt</h2>
+      <p class="muted">Jede geprüfte Rechnung wird gemerkt: korrigierte Angaben (Lieferant, Worum geht’s, Firma, Datum …) und deine Entscheidung. Beim nächsten Beleg desselben Absenders übernimmt der Sortierer Lieferantenname und Firma und gibt der KI diese Beispiele mit.</p>
+      <div class="table-wrap"><table class="tbl"><thead><tr><th>Datum</th><th>Absender</th><th>Gemerkt</th><th></th></tr></thead><tbody>
+      ${invEx.map(e => `<tr><td class="nowrap">${fmtDate(e.created_at)}</td><td class="small">${esc(e.from_addr || 'Scan')}</td>
+        <td><b>${esc(e.supplier || '?')}</b>${e.brand ? ` <span class="pill brand">${esc(e.brand)}</span>` : ''} <span class="pill">${esc({ business: 'geschäftlich', private: 'privat', noinvoice: 'keine Rechnung', edit: 'Angaben korrigiert' }[e.decision] || e.decision)}</span>
+          <div class="muted small">${esc(e.content || '')}</div></td>
+        <td><form method="post" action="/rechnungen-gelernt/${e.id}/loeschen" class="inline">${csrf(s)}<button class="btn sm ghost">vergessen</button></form></td></tr>`).join('') || '<tr><td colspan="4" class="muted">Noch nichts – kommt mit der ersten geprüften Rechnung.</td></tr>'}
+      </tbody></table></div>
     </section>
 
     <section class="card"><h2>Beispiele für die KI</h2>
@@ -401,6 +423,10 @@ export function createApp () {
       db.prepare("UPDATE rules SET target = ?, state = 'active', origin = 'hand', updated_at = ? WHERE id = ?").run(String(req.body.target), now(), id)
     }
     back(res, '/gelernt', { msg: 'Gespeichert.' })
+  })
+  app.post('/rechnungen-gelernt/:id/loeschen', (req, res) => {
+    forgetInvoiceLearning(int(req.params.id, 1, 1e12, 0))
+    back(res, '/gelernt', { msg: 'Vergessen.' })
   })
   app.post('/beispiele/:id/loeschen', (req, res) => {
     db.prepare('DELETE FROM examples WHERE id = ?').run(int(req.params.id, 1, 1e12, 0))

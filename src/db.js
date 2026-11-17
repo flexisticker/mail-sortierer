@@ -120,7 +120,16 @@ addColumn('mails', 'risk', 'INTEGER')          // Punktzahl der Sicherheitsprüf
 addColumn('mails', 'risk_reasons', 'TEXT')     // Gründe (JSON)
 addColumn('invoices', 'brand', 'TEXT')         // Firma/Marke (z. B. Flexisticker, 3dbymicha)
 addColumn('invoices', 'risk', 'TEXT')
-addColumn('invoices', 'content', 'TEXT')       // worum es geht (kurz)          // Sicherheitsbefund des Belegs (JSON) – gesperrt, wenn gesetzt
+addColumn('invoices', 'content', 'TEXT')       // worum es geht (kurz)
+addColumn('invoices', 'text_snippet', 'TEXT')  // Textanfang des Belegs – für Lernbeispiele
+
+// Gelerntes aus Rechnungs-Prüfungen (Angaben korrigiert, Lexware/Privat/Keine Rechnung)
+db.exec(`CREATE TABLE IF NOT EXISTS inv_examples (
+  id INTEGER PRIMARY KEY, invoice_id INTEGER, from_addr TEXT, domain TEXT, supplier TEXT, brand TEXT, number TEXT, inv_date TEXT,
+  amount REAL, content TEXT, decision TEXT NOT NULL, snippet TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS inv_examples_from ON inv_examples(from_addr);
+CREATE INDEX IF NOT EXISTS inv_examples_domain ON inv_examples(domain);`)          // Sicherheitsbefund des Belegs (JSON) – gesperrt, wenn gesetzt
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS mails_status ON mails(status);
