@@ -5,7 +5,10 @@ import { db, now } from './db.js'
 
 const scrypt = promisify(crypto.scrypt)
 const N = 2 ** 16
-const SESSION_DAYS = 30
+const SESSION_DAYS = 30          // „Angemeldet bleiben“
+const SHORT_MS = 12 * 3600 * 1000 // ohne Haken: 12 Stunden ohne Nutzung, Cookie endet mit dem Browser
+// Spalte für „Angemeldet bleiben“ (ältere Datenbanken)
+if (!db.prepare('PRAGMA table_info(sessions)').all().some(c => c.name === 'remember')) db.exec('ALTER TABLE sessions ADD COLUMN remember INTEGER NOT NULL DEFAULT 1')
 
 export async function hashPassword (pw) {
   const salt = crypto.randomBytes(16)
@@ -49,7 +52,7 @@ function fail (key) {
 
 const DUMMY = 'scrypt$16$AAAAAAAAAAAAAAAAAAAAAA==$' + Buffer.alloc(64).toString('base64')
 
-export async function login (name, pw, ip) {
+export async function login (name, pw, ip, remember = true) {
   if (tooMany('ip:' + ip) || tooMany('name:' + name)) return { error: 'Zu viele Fehlversuche – bitte 15 Minuten warten.' }
   const u = db.prepare('SELECT * FROM users WHERE name = ?').get(String(name || ''))
   const ok = await verifyPassword(pw, u ? u.hash : DUMMY)
@@ -60,20 +63,24 @@ export async function login (name, pw, ip) {
   fails.delete('ip:' + ip); fails.delete('name:' + name)
   const token = crypto.randomBytes(32).toString('base64url')
   const csrf = crypto.randomBytes(24).toString('base64url')
-  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires_at) VALUES (?, ?, ?, ?)')
-    .run(sha(token), u.id, csrf, Date.now() + SESSION_DAYS * 864e5)
-  return { token }
+  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires_at, remember) VALUES (?, ?, ?, ?, ?)')
+    .run(sha(token), u.id, csrf, Date.now() + (remember ? SESSION_DAYS * 864e5 : SHORT_MS), remember ? 1 : 0)
+  return { token, remember }
 }
 
 export function sessionFor (token) {
   if (!token) return null
   const s = db.prepare('SELECT s.*, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE token_hash = ?').get(sha(token))
   if (!s || s.expires_at < Date.now()) return null
-  // gleitend verlängern
-  if (s.expires_at - Date.now() < (SESSION_DAYS - 1) * 864e5) {
+  // gleitend verlängern (bei „Angemeldet bleiben“ höchstens einmal am Tag, dann wird auch das Cookie erneuert)
+  let renewed = false
+  if (s.remember && s.expires_at - Date.now() < (SESSION_DAYS - 1) * 864e5) {
     db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(Date.now() + SESSION_DAYS * 864e5, s.token_hash)
+    renewed = true
+  } else if (!s.remember && s.expires_at - Date.now() < SHORT_MS - 5 * 60000) {
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(Date.now() + SHORT_MS, s.token_hash)
   }
-  return { userId: s.user_id, name: s.name, csrf: s.csrf, tokenHash: s.token_hash }
+  return { userId: s.user_id, name: s.name, csrf: s.csrf, tokenHash: s.token_hash, remember: !!s.remember, renewed }
 }
 
 export function logout (token) {

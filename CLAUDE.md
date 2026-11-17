@@ -95,3 +95,6 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Ältere Jahre: weiter Ablage `Rechnungen/JJJJ/JJJJ-MM`, aber Status `archived` („Jahr abgeschlossen“), kein Fähnchen, kein Lexware-Knopf (`yearClosed`).
   Beim Speichern `applyYearSetting()`: offene älterer Jahre → archived (Fähnchen weg), archivierte aus nun geprüften Jahren → wieder offen.
   Datum in „Angaben ändern“ verschiebt den Status mit.
+- **1.4.1:** Michael musste sich ständig neu anmelden – Ursache Cookie `SameSite=Strict` (kommt beim Aufruf über einen Link, z. B. Unraid „WebUI“, nicht mit).
+  Jetzt `SameSite=Lax` (CSRF-Feld + Origin-Prüfung schützen weiter), Haken „Angemeldet bleiben (30 Tage)“ (Standard an; Spalte `sessions.remember`,
+  ohne Haken 12 Std. gleitend + Sitzungs-Cookie), Cookie wird bei Nutzung erneuert (`renewed`).

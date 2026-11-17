@@ -19,6 +19,12 @@ import { classify } from './classify.js'
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public')
 const COOKIE = 'ms_sitzung'
 
+// SameSite=Lax: Cookie kommt auch mit, wenn man über einen Link (Unraid „WebUI“, Lesezeichen aus einer Mail) kommt.
+// Schutz gegen fremde Formulare bleibt: CSRF-Feld + Herkunftsprüfung.
+function sessionCookie (token, remember) {
+  return `${COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${remember ? `; Max-Age=${30 * 86400}` : ''}`
+}
+
 function cookie (req, name) {
   const m = String(req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith(name + '='))
   return m ? decodeURIComponent(m.slice(name.length + 1)) : ''
@@ -68,7 +74,9 @@ export function createApp () {
 
   // Sitzung + Schutz gegen fremde Formulare (Origin + CSRF-Feld)
   app.use((req, res, next) => {
-    req.session = sessionFor(cookie(req, COOKIE))
+    const tok = cookie(req, COOKIE)
+    req.session = sessionFor(tok)
+    if (req.session && req.session.renewed) res.append('Set-Cookie', sessionCookie(tok, true))
     if (req.method === 'POST') {
       const origin = req.headers.origin
       if (origin && origin !== 'null') {
@@ -115,18 +123,19 @@ export function createApp () {
       <form method="post" action="/anmelden" class="form">
         <label>Benutzername<input name="name" required autocomplete="username" autofocus></label>
         <label>Passwort<input name="pw" type="password" required autocomplete="current-password"></label>
+        <label class="check"><input type="checkbox" name="bleiben" value="1" checked> Angemeldet bleiben (30 Tage)</label>
         <button class="btn primary">Anmelden</button></form></section>`
     }))
   })
   app.post('/anmelden', async (req, res) => {
-    const r = await login(String(req.body.name || '').trim(), String(req.body.pw || ''), req.socket.remoteAddress || '')
+    const r = await login(String(req.body.name || '').trim(), String(req.body.pw || ''), req.socket.remoteAddress || '', req.body.bleiben === '1')
     if (r.error) return back(res, '/anmelden', { err: r.error })
-    res.set('Set-Cookie', `${COOKIE}=${encodeURIComponent(r.token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${30 * 86400}`)
+    res.set('Set-Cookie', sessionCookie(r.token, r.remember))
     res.redirect(303, '/')
   })
   app.post('/abmelden', (req, res) => {
     logout(cookie(req, COOKIE))
-    res.set('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`)
+    res.set('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
     res.redirect(303, '/anmelden')
   })
 
@@ -893,7 +902,7 @@ export function createApp () {
     if (!u || !(await verifyPassword(String(req.body.old || ''), u.hash))) return back(res, '/einstellungen#konto', { err: 'Aktuelles Passwort falsch.' })
     if (String(req.body.pw || '').length < 10) return back(res, '/einstellungen#konto', { err: 'Neues Passwort zu kurz.' })
     await changePassword(u.id, String(req.body.pw))
-    res.set('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`)
+    res.set('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
     back(res, '/anmelden', { msg: 'Passwort geändert – bitte neu anmelden.' })
   })
 
