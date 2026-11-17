@@ -300,16 +300,39 @@ export const DEFAULT_IP_LISTS = 'zen.spamhaus.org\nbl.spamcop.net'
 export const DEFAULT_DOMAIN_LISTS = 'dbl.spamhaus.org\nmulti.surbl.org'
 const cache = new Map()
 
-async function lookup (name) {
-  if (cache.has(name)) return cache.get(name)
+// DNS-Server für die Sperrlisten: leer = automatisch (wie das System bzw. der Container), sonst eigene Adresse(n).
+export function parseDnsServers (v) {
+  return String(v || '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean).filter(x => {
+    const m = x.match(/^\[?([0-9a-f:.]+?)\]?(?::(\d{1,5}))?$/i)
+    if (!m) return false
+    if (net.isIP(x)) return true
+    return net.isIPv4(m[1]) || (net.isIPv6(m[1]) && x.startsWith('['))
+  }).slice(0, 3)
+}
+const resolvers = new Map()
+function resolverFor (servers) {
+  const key = servers.join(',')
+  if (!key) return { key: '', resolve4: (n) => dns.resolve4(n) }
+  if (!resolvers.has(key)) {
+    const r = new dns.Resolver({ timeout: 2500, tries: 1 })
+    r.setServers(servers)
+    resolvers.set(key, { key, resolve4: (n) => r.resolve4(n) })
+  }
+  return resolvers.get(key)
+}
+export function systemDnsServers () { return dns.getServers() }
+
+async function lookup (name, res = resolverFor([])) {
+  const ck = res.key + '|' + name
+  if (cache.has(ck)) return cache.get(ck)
   let r = null
   try {
     const t = new Promise((resolve) => setTimeout(() => resolve('timeout'), 4000))
-    const a = await Promise.race([dns.resolve4(name), t])
+    const a = await Promise.race([res.resolve4(name), t])
     r = a === 'timeout' ? null : a
   } catch { r = [] }
   if (cache.size > 5000) cache.clear()
-  cache.set(name, r)
+  if (r !== null) cache.set(ck, r)
   return r
 }
 
@@ -342,10 +365,40 @@ export async function blocklistCheck ({ ip, domains }, cfg) {
   const ds = [...new Set((domains || []).map(baseDomain).filter(d => d && d.includes('.')))].slice(0, 8)
   for (const d of ds) for (const l of dLists) jobs.push({ name: `${d}.${l}`, list: l, text: `Domain ${d} steht auf ${l}` })
   // alle Abfragen gleichzeitig, insgesamt höchstens ~5 Sekunden
-  const results = await Promise.all(jobs.map(j => lookup(j.name).then(r => ({ j, r }))))
+  const res = resolverFor(parseDnsServers(cfg.dnsServer))
+  const results = await Promise.all(jobs.map(j => lookup(j.name, res).then(r => ({ j, r }))))
   for (const { j, r } of results) {
     if (blocked(r)) out.warning = `${j.list} beantwortet keine Abfragen über diesen DNS-Server`
     else if (realHit(r) && !out.hits.includes(j.text)) out.hits.push(j.text)
   }
   return out
+}
+
+// Testabfrage: jede Liste hat einen offiziellen Testeintrag, der immer „gelistet“ meldet.
+const TEST_IP = '2.0.0.127' // = 127.0.0.2
+const TEST_DOMAIN = { 'dbl.spamhaus.org': 'dbltest.com', 'multi.surbl.org': 'surbl-org-permanent-test-point.com' }
+export async function testBlocklists (cfg) {
+  const servers = parseDnsServers(cfg.dnsServer)
+  const res = resolverFor(servers)
+  const ipLists = String(cfg.ipLists ?? DEFAULT_IP_LISTS).split(/\s+/).filter(Boolean).slice(0, 5)
+  const dLists = String(cfg.domainLists ?? DEFAULT_DOMAIN_LISTS).split(/\s+/).filter(Boolean).slice(0, 5)
+  const jobs = [
+    ...ipLists.map(l => ({ list: l, name: `${TEST_IP}.${l}` })),
+    ...dLists.map(l => ({ list: l, name: `${TEST_DOMAIN[l] || 'test'}.${l}`, unknown: !TEST_DOMAIN[l] }))
+  ]
+  const out = []
+  for (const j of jobs) {
+    let r = null
+    try {
+      const t = new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000))
+      r = await Promise.race([res.resolve4(j.name), t])
+    } catch (e) { r = e && e.code === 'ENOTFOUND' ? [] : 'error' }
+    let state
+    if (r === 'timeout' || r === 'error') state = 'noanswer'
+    else if (blocked(r)) state = 'blocked'
+    else if (realHit(r)) state = 'ok'
+    else state = j.unknown ? 'unknown' : 'nohit'
+    out.push({ list: j.list, state })
+  }
+  return { servers: servers.length ? servers : dns.getServers(), auto: !servers.length, results: out }
 }

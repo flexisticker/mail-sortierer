@@ -10,12 +10,13 @@ import { hasUsers, createUser, login, logout, sessionFor, verifyPassword, change
 import { PLATFORM, getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
-import { runOnce, isRunning, getStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
+import { runOnce, isRunning, getStatus, setStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { licenseState, activate, checkin, release } from './license.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
 import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release as releaseInvoice, editInvoice, forgetInvoiceLearning, applyYearSetting, checkScanDir, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
 import { listModels } from './ollama.js'
+import { parseDnsServers, systemDnsServers, testBlocklists } from './security.js'
 import { classify } from './classify.js'
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public')
@@ -764,18 +765,20 @@ export function createApp () {
 
     <section class="card" id="sicherheit"><h2>Sicherheit</h2>
       <p class="muted">Jede Mail wird vor allem anderen geprüft: gefährliche Anhänge (Programme, Makros, getarnte Dateien, Archive mit Passwort), PDFs mit Skripten, gefälschte Absender und Links, nachgemachte Domains, Druck plus Passwortabfrage, Absender-Prüfung des Mailservers (SPF/DKIM/DMARC). Anhänge werden dabei nie geöffnet. Verdächtige Mails kommen nach „${esc(targetLabel('verdacht', cfg))}“, Spam nach „${esc(targetLabel('spam', cfg))}“ – gelöscht wird nichts.</p>
-      ${getStatus().dnsWarning ? `<div class="alert bad">Spam-Sperrliste: ${esc(getStatus().dnsWarning)}. Abhilfe: einen eigenen DNS-Server nutzen (z. B. den des Routers) (nicht 8.8.8.8/1.1.1.1) oder die Liste entfernen.</div>` : ''}
+      ${getStatus().dnsWarning ? `<div class="alert bad">Spam-Sperrliste: ${esc(getStatus().dnsWarning)}. Abhilfe: unten einen anderen DNS-Server eintragen und „Speichern &amp; Sperrlisten testen“ – oder die Liste entfernen.</div>` : ''}
       <form method="post" action="/einstellungen/sicherheit" class="form two">${csrf(s)}
         <label>Ab dieser Punktzahl „Verdacht“<input name="phishThreshold" type="number" value="${cfg.security.phishThreshold}" min="20" max="300"></label>
         <label>Ab dieser Punktzahl Warnhinweis<input name="warnThreshold" type="number" value="${cfg.security.warnThreshold}" min="5" max="300"></label>
         <label class="check span"><input type="checkbox" name="blockDangerous" value="1"${chk(cfg.security.blockDangerous)}> Mails mit gefährlichen Anhängen immer nach „Verdacht“ (empfohlen)</label>
         <label class="check span"><input type="checkbox" name="spamHeader" value="1"${chk(cfg.security.spamHeader)}> Spam-Kennzeichnung des Mailservers übernehmen (X-Spam-Flag deines Anbieters)</label>
-        <label class="check span"><input type="checkbox" name="dnsbl" value="1"${chk(cfg.security.dnsbl)}> Spam-Sperrlisten abfragen – dabei gehen <b>nur IP-Adresse des Absender-Servers und Domains</b> an den Listenbetreiber, nie Inhalte</label>
+        <label class="check span"><input type="checkbox" name="dnsbl" value="1"${chk(cfg.security.dnsbl)}> <span>Spam-Sperrlisten abfragen – dabei gehen <b>nur IP-Adresse des Absender-Servers und Domains</b> an den Listenbetreiber, nie Inhalte</span></label>
         <label>Sperrlisten für Server-IPs (je Zeile)<textarea name="ipLists" rows="2" maxlength="300">${esc(cfg.security.ipLists)}</textarea></label>
         <label>Sperrlisten für Domains (je Zeile)<textarea name="domainLists" rows="2" maxlength="300">${esc(cfg.security.domainLists)}</textarea></label>
+        <label>DNS-Server für die Sperrlisten (leer = automatisch)<input name="dnsServer" maxlength="120" value="${esc(cfg.security.dnsServer || '')}" placeholder="z. B. 192.168.1.1"></label>
+        <p class="muted small">Automatisch nutzt er gerade: ${esc(systemDnsServers().join(', ') || '–')}. Spamhaus sperrt öffentliche DNS-Server (Google, Cloudflare, oft auch die der Internetanbieter). Funktioniert nur mit einem DNS-Server, der selbst auflöst (z. B. Pi-hole mit Unbound) – der Test zeigt es.</p>
         <label class="span">Weitere oft gefälschte Absender (je Zeile „Name = domain.de, domain2.de“)<textarea name="brands" rows="2" maxlength="2000" placeholder="Meine Bank = meinebank.de">${esc(cfg.security.brands)}</textarea></label>
         <p class="muted small span">Spamhaus und SURBL sind für kleine Mengen kostenlos. Fehlalarm? In der Mailliste „ist harmlos“ klicken oder die Mail in Outlook aus dem Ordner ziehen – der Absender gilt dann als vertrauenswürdig.</p>
-        <div class="row span"><button class="btn primary">Speichern</button></div>
+        <div class="row span"><button class="btn primary">Speichern</button><button class="btn" name="next" value="test">Speichern &amp; Sperrlisten testen</button></div>
       </form></section>
 
     <section class="card" id="konto"><h2>Konto</h2>
@@ -945,7 +948,7 @@ export function createApp () {
     log('info', `Eigener Ordner „${name}“ angelegt`)
     back(res, '/einstellungen#ordner', { msg: `Ordner „${name}“ angelegt – er erscheint beim nächsten Durchlauf in den scharf geschalteten Postfächern.` })
   })
-  app.post('/einstellungen/sicherheit', (req, res) => {
+  app.post('/einstellungen/sicherheit', async (req, res) => {
     const b = req.body
     const lists = (v) => String(v || '').split(/\s+/).map(x => x.trim().toLowerCase()).filter(x => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(x)).slice(0, 5).join('\n')
     saveConfig({ security: {
@@ -956,9 +959,18 @@ export function createApp () {
       dnsbl: b.dnsbl === '1',
       ipLists: lists(b.ipLists),
       domainLists: lists(b.domainLists),
+      dnsServer: parseDnsServers(b.dnsServer).join(', '),
       brands: String(b.brands || '').slice(0, 2000)
     } })
-    back(res, '/einstellungen#sicherheit', { msg: 'Gespeichert.' })
+    if (String(b.dnsServer || '').trim() && !parseDnsServers(b.dnsServer).length) return back(res, '/einstellungen#sicherheit', { err: 'DNS-Server ungültig – bitte eine IP-Adresse eintragen (z. B. 192.168.1.1).' })
+    if (b.next !== 'test') return back(res, '/einstellungen#sicherheit', { msg: 'Gespeichert.' })
+    const t = await testBlocklists(getConfig().security)
+    const LBL = { ok: 'funktioniert', blocked: 'gesperrt (dieser DNS-Server wird vom Betreiber abgelehnt)', noanswer: 'keine Antwort', nohit: 'antwortet nicht richtig (Testeintrag fehlt)', unknown: 'erreichbar (kein Testeintrag bekannt)' }
+    const lines = t.results.map(r => `${r.list}: ${LBL[r.state]}`).join(' · ')
+    const bad = t.results.some(r => r.state === 'blocked' || r.state === 'noanswer' || r.state === 'nohit')
+    if (!t.results.some(r => r.state === 'blocked')) setStatus({ dnsWarning: null })
+    const via = `DNS ${t.auto ? 'automatisch ' : ''}${t.servers.join(', ')}`
+    back(res, '/einstellungen#sicherheit', bad ? { err: `Gespeichert. Test über ${via} – ${lines}` } : { msg: `Gespeichert. Test über ${via} – ${lines}` })
   })
 
   app.post('/einstellungen/passwort', async (req, res) => {

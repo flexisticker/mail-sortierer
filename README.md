@@ -38,6 +38,7 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nie etwas gelöscht** – nur ver
   dazu die Einschätzung der lokalen KI. Punktzahl ≥ Schwelle → Ordner **„Achtung Verdacht“**.
 - **Spam:** Spam-Kennzeichnung des Mailservers und Sperrlisten (Spamhaus ZEN/DBL, SpamCop, SURBL per DNS – es gehen nur
   IP-Adresse/Domain an den Betreiber, nie Inhalte) → Ordner **„Spam“**.
+- DNS-Server für die Sperrlisten einstellbar (Spamhaus lehnt öffentliche DNS-Server ab), mit Test-Knopf.
 - Fehlalarm: „ist harmlos“ bzw. Mail in Outlook herausziehen → Absender gilt als vertrauenswürdig.
 - Eigene Ordner mit Beschreibung für die KI (Einstellungen → Ordner).
 - Rechnungen: Firma/privat aus der Anschrift („Michael Zatti – Flexisticker“, „… – 3dbymicha“), sonst KI nach Inhalt,

@@ -29,7 +29,7 @@ function insert (acc, m, d, status, folder, uidvalidity) {
   return byMsgid.get(acc.id, m.msgid)
 }
 
-function setStatus (patch) { kvSet('status', { ...kvGet('status', {}), ...patch }) }
+export function setStatus (patch) { kvSet('status', { ...kvGet('status', {}), ...patch }) }
 export const getStatus = () => kvGet('status', {})
 function setAccStatus (id, patch) {
   const all = kvGet('accStatus', {})

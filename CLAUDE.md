@@ -114,3 +114,7 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
 - **1.5.1:** „Sicherheitsprüfung fehlgeschlagen“ beim Anmelden: Login-Formular wurde abgeschickt, während noch eine gültige Sitzung bestand
   (wiederhergestellter Tab, seit „Angemeldet bleiben“ häufig) → CSRF-Feld fehlte. `/anmelden` und `/einrichten` sind jetzt von der Sitzungs-CSRF-Prüfung
   ausgenommen (Origin-Prüfung bleibt); andere veraltete Formulare leiten mit Hinweis zur Seite zurück statt 403-Text.
+- **1.6.0:** DNS-Server für die Sperrlisten einstellbar (`security.dnsServer`, leer = automatisch; IP, IP:Port, [IPv6]:Port, max. 3; eigener `dns.Resolver` in security.js),
+  Anzeige des automatisch genutzten DNS (`dns.getServers()`), Knopf „Speichern & Sperrlisten testen“ (`testBlocklists`: offizielle Testeinträge 127.0.0.2,
+  dbltest.com, surbl-org-permanent-test-point.com → funktioniert/gesperrt/keine Antwort). Hinweis: Spamhaus braucht einen selbst auflösenden DNS (Pi-hole+Unbound);
+  die UDM leitet meist nur weiter. Getestet mit nachgebautem DNS-Server, **nicht** mit echtem Spamhaus (Sandbox ohne DNS).

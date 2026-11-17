@@ -43,6 +43,7 @@ export const DEFAULT_CONFIG = {
     dnsbl: true,             // Spam-Sperrlisten abfragen (nur IP/Domain gehen an den Listenbetreiber, kein Inhalt)
     ipLists: 'zen.spamhaus.org\nbl.spamcop.net',
     domainLists: 'dbl.spamhaus.org\nmulti.surbl.org',
+    dnsServer: '',           // DNS-Server für die Sperrlisten, leer = automatisch (wie das System)
     spamHeader: true         // Spam-Kennzeichnung des Mailservers (X-Spam-Flag) übernehmen
   },
   business: { name: '', description: '' }, // Betrieb – nur als Hintergrund für die KI
