@@ -40,9 +40,28 @@ export function learnSender (addr, target, origin) {
   return state
 }
 
+// Absender als vertrauenswürdig merken (nach „ist harmlos“ bzw. aus „Achtung Verdacht“/„Spam“ herausgezogen)
+export function trustSender (addr, origin) {
+  if (!addr || !addr.includes('@')) return
+  const t = now()
+  db.prepare(`INSERT INTO rules (kind, value, target, state, hits, conflicts, origin, created_at, updated_at) VALUES ('trust', ?, 'inbox', 'active', 1, 0, ?, ?, ?)
+    ON CONFLICT(kind, value) DO UPDATE SET state = 'active', hits = rules.hits + 1, updated_at = excluded.updated_at`).run(addr, origin, t, t)
+}
+export function isTrusted (mail) {
+  if (db.prepare("SELECT 1 FROM rules WHERE kind = 'trust' AND value = ? AND state = 'active'").get(mail.from_addr || '')) return true
+  return !!(mail.domain && !FREEMAIL.has(mail.domain) && db.prepare("SELECT 1 FROM rules WHERE kind = 'trustdomain' AND value = ? AND state = 'active'").get(mail.domain))
+}
+// Bekannt = Kontaktliste oder schon mehrfach unauffällig gesehen
+export function isKnown (mail) {
+  if (contactFor(mail.from_addr)) return true
+  const n = db.prepare("SELECT COUNT(*) n FROM mails WHERE from_addr = ? AND decision NOT IN ('verdacht', 'spam') AND COALESCE(risk, 0) < 30").get(mail.from_addr || '').n
+  return n >= 3
+}
+
 // Eine Korrektur verarbeiten (aus Outlook erkannt oder in der Oberfläche gewählt)
 export function recordCorrection (mail, target, origin) {
   const previous = mail.decision || null
+  if ((previous === 'verdacht' || previous === 'spam') && target !== previous) trustSender(mail.from_addr, origin)
   addExample(mail, target, previous, origin)
   const state = learnSender(mail.from_addr, target, origin)
   log('info', `Gelernt (${origin === 'outlook' ? 'aus Outlook' : 'in der Oberfläche'}): ${mail.from_addr || '?'} „${String(mail.subject || '').slice(0, 60)}“ → ${targetLabel(target)}` +

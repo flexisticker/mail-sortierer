@@ -89,7 +89,7 @@ export async function readMessages (client, uids) {
   const out = []
   if (!uids.length) return out
   const msgs = await client.fetchAll(uids, {
-    uid: true, envelope: true, bodyStructure: true, internalDate: true,
+    uid: true, envelope: true, bodyStructure: true, internalDate: true, size: true,
     headers: ['list-unsubscribe', 'list-id', 'precedence', 'auto-submitted', 'x-auto-response-suppress'],
     source: { start: 0, maxLength: READ_BYTES }
   }, { uid: true })
@@ -99,8 +99,9 @@ export async function readMessages (client, uids) {
     const date = (m.envelope && m.envelope.date) || m.internalDate
     const dateIso = date ? new Date(date).toISOString() : ''
     let text = ''
+    let parsed = null
     try {
-      const parsed = await simpleParser(m.source || Buffer.alloc(0), { skipImageLinks: true, skipTextToHtml: true })
+      parsed = await simpleParser(m.source || Buffer.alloc(0), { skipImageLinks: true, skipTextToHtml: true })
       text = parsed.text || (parsed.html ? String(parsed.html).replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ') : '')
     } catch { text = '' }
     const headers = String(m.headers || '').toLowerCase()
@@ -113,6 +114,15 @@ export async function readMessages (client, uids) {
     const att = attachmentNames(m.bodyStructure).filter(n => !/^(image|outlook-)\S*\.(png|gif|jpe?g)$/i.test(n)) // eingebettete Signaturbilder weglassen
     if (att.length) hints.push('Anhänge: ' + att.slice(0, 6).join(', '))
     const msgid = (m.envelope && m.envelope.messageId) || synthMsgId(from.addr, dateIso, subject)
+    // Für die Sicherheitsprüfung: Archive/Office-Dateien vollständig laden (nur als Bytes, nie geöffnet), max. 15 MB
+    let attachments = parsed ? (parsed.attachments || []).filter(a => !(a.related && /^image\//.test(a.contentType))) : []
+    if (att.some(n => /\.(zip|rar|7z|docx|xlsx|pptx|doc|xls)$/i.test(n)) && m.size && m.size <= 15 * 1024 * 1024 && m.size > READ_BYTES) {
+      try {
+        const full = await client.fetchOne(String(m.uid), { source: true }, { uid: true })
+        const p2 = await simpleParser(full.source, { skipImageLinks: true, skipTextToHtml: true })
+        attachments = (p2.attachments || []).filter(a => !(a.related && /^image\//.test(a.contentType)))
+      } catch { /* bleibt bei den Namen */ }
+    }
     out.push({
       uid: m.uid,
       msgid: String(msgid).slice(0, 500),
@@ -123,7 +133,12 @@ export async function readMessages (client, uids) {
       date: dateIso,
       snippet: cleanText(text).slice(0, SNIPPET),
       hints: hints.join('; '),
-      attachments: att
+      attNames: att,
+      // nur für die Prüfung im Speicher, wird nicht gespeichert
+      _headers: parsed ? parsed.headers : new Map(),
+      _html: parsed && parsed.html ? String(parsed.html).slice(0, 400000) : '',
+      _text: cleanText(text).slice(0, 20000),
+      _attachments: attachments.map(a => ({ filename: a.filename || '', contentType: a.contentType || '', content: a.content }))
     })
   }
   return out

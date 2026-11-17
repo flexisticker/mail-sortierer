@@ -5,7 +5,8 @@ import path from 'node:path'
 import zlib from 'node:zlib'
 import { simpleParser } from 'mailparser'
 import { db, now, log, DATA_DIR, kvGet, kvSet } from './db.js'
-import { getConfig } from './config.js'
+import { getConfig, companyList } from './config.js'
+import { pdfStreams, pdfRisk, scanAttachment } from './security.js'
 import { chatJson } from './ollama.js'
 import { getAccount, accountLabel } from './accounts.js'
 import { withClient, ensurePath, appendMessage, moveMessage, findByMsgId, pathString } from './imap.js'
@@ -41,6 +42,16 @@ const block = (xml, name) => {
 }
 const decodeXml = (s) => String(s || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
 
+function itemNames (xml, el) {
+  const names = []
+  for (const m of xml.matchAll(new RegExp(`<(?:[\\w-]+:)?${el}\\b[^>]*>([\\s\\S]*?)</(?:[\\w-]+:)?${el}>`, 'g'))) {
+    const n = decodeXml(tag(m[1], 'Name')).trim()
+    if (n && !names.includes(n)) names.push(n)
+    if (names.length >= 3) break
+  }
+  return names.join(', ').slice(0, 120)
+}
+
 // E-Rechnung (ZUGFeRD/Factur-X/XRechnung CII oder UBL) – exakte Angaben
 export function parseEInvoice (xml) {
   xml = String(xml || '')
@@ -52,7 +63,8 @@ export function parseEInvoice (xml) {
       date: /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : '',
       supplier: decodeXml(tag(block(xml, 'SellerTradeParty'), 'Name')),
       amount: Number(tag(xml, 'GrandTotalAmount')) || null,
-      currency: tag(xml, 'InvoiceCurrencyCode') || 'EUR'
+      currency: tag(xml, 'InvoiceCurrencyCode') || 'EUR',
+      content: itemNames(xml, 'SpecifiedTradeProduct')
     }
   }
   if (/<(?:[\w-]+:)?Invoice\b[\s\S]*urn:oasis:names:specification:ubl/.test(xml) || /<(?:[\w-]+:)?CreditNote\b/.test(xml)) {
@@ -65,7 +77,8 @@ export function parseEInvoice (xml) {
       date: tag(top, 'IssueDate'),
       supplier: decodeXml(tag(sup, 'RegistrationName') || tag(sup, 'Name')),
       amount: amt ? Number(amt[2]) : null,
-      currency: amt ? amt[1] : 'EUR'
+      currency: amt ? amt[1] : 'EUR',
+      content: itemNames(xml, 'Item')
     }
   }
   return null
@@ -73,20 +86,10 @@ export function parseEInvoice (xml) {
 
 // In ZUGFeRD-PDFs steckt die XML als eingebettete Datei (meist FlateDecode-Stream)
 export function embeddedXml (pdf) {
-  const s = pdf.toString('latin1')
-  const re = /<<((?:(?!>>\s*stream)[\s\S]){0,2000})>>\s*stream\r?\n/g
-  let m; let n = 0
-  while ((m = re.exec(s)) && n++ < 400) {
-    const start = m.index + m[0].length
-    const end = s.indexOf('endstream', start)
-    if (end < 0) break
-    if (end - start > 5 * 1024 * 1024) continue
-    let data = pdf.subarray(start, end)
-    try {
-      if (/FlateDecode/.test(m[1])) data = zlib.inflateSync(data, { finishFlush: zlib.constants.Z_SYNC_FLUSH })
-      const t = data.toString('utf8')
-      if (/CrossIndustryInvoice|urn:oasis:names:specification:ubl:schema:xsd:Invoice/.test(t) && t.includes('<')) return t.slice(t.indexOf('<'))
-    } catch { /* kein gültiger Stream */ }
+  for (const { data } of pdfStreams(pdf)) {
+    if (data.length > 5 * 1024 * 1024) continue
+    const t = data.toString('utf8')
+    if (/CrossIndustryInvoice|urn:oasis:names:specification:ubl:schema:xsd:Invoice/.test(t) && t.includes('<')) return t.slice(t.indexOf('<'))
   }
   return ''
 }
@@ -94,8 +97,12 @@ export function embeddedXml (pdf) {
 export async function pdfText (buf) {
   try {
     const { getDocumentProxy, extractText } = await import('unpdf')
-    const doc = await getDocumentProxy(new Uint8Array(buf))
-    const { text } = await extractText(doc, { mergePages: true })
+    const work = (async () => {
+      const doc = await getDocumentProxy(new Uint8Array(buf), { isEvalSupported: false, disableFontFace: true, useSystemFonts: false, enableXfa: false, stopAtErrors: false })
+      const { text } = await extractText(doc, { mergePages: true })
+      return text
+    })()
+    const text = await Promise.race([work, new Promise(resolve => setTimeout(() => resolve(''), 20000))])
     return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 5000)
   } catch { return '' }
 }
@@ -109,20 +116,27 @@ const INV_SCHEMA = {
     datum: { type: 'string' },
     betrag: { type: ['number', 'null'] },
     waehrung: { type: 'string' },
-    privat: { type: 'boolean' },
+    inhalt: { type: 'string' },
+    zuordnung: { type: 'string', enum: ['firma', 'privat', 'unklar'] },
+    firma: { type: 'string' },
     grund: { type: 'string' }
   },
-  required: ['ist_rechnung', 'lieferant', 'nummer', 'datum', 'betrag', 'waehrung', 'privat', 'grund']
+  required: ['ist_rechnung', 'lieferant', 'nummer', 'datum', 'betrag', 'waehrung', 'inhalt', 'zuordnung', 'firma', 'grund']
 }
 
 async function kiExtract (cfg, { from, subject, text, fileName }) {
+  const companies = companyList(cfg)
+  const owner = cfg.invoices.ownerName || 'Michael Zatti'
   const r = await chatJson(cfg, [
     { role: 'system', content: [
       'Du liest Rechnungen für Flexisticker (Textil- und Tassendruck, Inhaber Michael) aus.',
       'ist_rechnung: true nur für eine echte Rechnung oder Gutschrift (Beleg für die Buchhaltung) – nicht für Zahlungsbestätigung, Mahnung ohne Rechnung, Kontoauszug, Bestellbestätigung, Angebot oder Werbung.',
       'lieferant: Firma, die die Rechnung stellt (kurz, ohne Rechtsform-Zusätze wenn eindeutig). nummer: Rechnungsnummer genau wie gedruckt.',
+      'inhalt: worum es geht, kurz in höchstens 8 Wörtern (z. B. „PLA-Filament 10 kg“, „Telefon/Internet Oktober“, „Webhosting 2027“).',
       'datum: Rechnungsdatum als JJJJ-MM-TT (nicht Liefer- oder Fälligkeitsdatum), leer wenn unbekannt. betrag: Gesamtbetrag brutto als Zahl mit Punkt, null wenn unbekannt. waehrung: z. B. EUR.',
-      'privat: true nur, wenn die Rechnung eindeutig privat ist (an eine Privatperson ohne Firmenbezug, z. B. private Versicherung, Streaming, Kleidung für den Eigenbedarf). Im Zweifel false.',
+      `Rechnungsempfänger ist ${owner}. Seine Firmen: ${companies.join(', ')} (Textil-/Tassendruck, Werbetechnik, 3D-Druck).`,
+      `zuordnung: „firma“, wenn eine dieser Firmen in der Anschrift steht oder der Inhalt eindeutig gewerblich ist (Material, Maschinen, Druck, Software, Versand, Werbung, Webhosting); dann firma = Name der Firma aus der Liste, sonst leer.`,
+      `„privat“, wenn nur „${owner}“ ohne Firma dasteht und der Inhalt eindeutig privat ist (Streaming, Kleidung, private Versicherung, Lebensmittel, Urlaub). „unklar“, wenn du es nicht sicher sagen kannst – lieber unklar als falsch.`,
       'grund: höchstens 10 Wörter. Antworte nur mit JSON.'
     ].join('\n') },
     { role: 'user', content: `Von: ${from || '-'}\nBetreff: ${subject || '-'}\nDatei: ${fileName || '-'}\nInhalt:\n${String(text || '(kein Text lesbar)').slice(0, 4000)}` }
@@ -135,9 +149,35 @@ async function kiExtract (cfg, { from, subject, text, fileName }) {
     date,
     amount: typeof r.betrag === 'number' && isFinite(r.betrag) ? Math.round(r.betrag * 100) / 100 : null,
     currency: /^[A-Z]{3}$/.test(String(r.waehrung || '')) ? r.waehrung : 'EUR',
-    private: !!r.privat,
+    assignment: ['firma', 'privat', 'unklar'].includes(r.zuordnung) ? r.zuordnung : 'unklar',
+    content: String(r.inhalt || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    company: companies.find(c => c.toLowerCase() === String(r.firma || '').trim().toLowerCase()) || '',
     reason: String(r.grund || '').slice(0, 150)
   }
+}
+
+// Steht eine der Firmen (z. B. „Michael Zatti – Flexisticker“) im Beleg? → geschäftlich + Marke
+const flat = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9äöüß]+/g, ' ')
+export function detectCompany (text, cfg) {
+  // Mail- und Web-Adressen zählen nicht (rechnung@flexisticker.de stünde sonst in jeder Mail)
+  const clean = String(text || '').replace(/[^\s<>()"',;]+@[^\s<>()"',;]+/g, ' ')
+    .replace(/(?:https?:\/\/|www\.)\S+/gi, ' ')
+    .replace(/\b[\w-]+\.(?:de|com|net|org|eu|shop|io|info|at|ch|biz)\b/gi, ' ')
+  const t = ' ' + flat(clean) + ' '
+  const owner = flat(cfg.invoices.ownerName || '').trim()
+  let best = null
+  for (const c of companyList(cfg)) {
+    const k = ' ' + flat(c).trim() + ' '
+    if (k.trim().length < 3) continue
+    let i = t.indexOf(k)
+    while (i >= 0) {
+      // Abstand zum Namen des Inhabers – die Firma direkt neben „Michael Zatti“ gewinnt
+      const near = owner ? Math.min(...[t.lastIndexOf(owner, i), t.indexOf(owner, i)].filter(x => x >= 0).map(x => Math.abs(x - i)), 9999) : 9999
+      if (!best || near < best.near) best = { company: c, near }
+      i = t.indexOf(k, i + 1)
+    }
+  }
+  return best ? best.company : ''
 }
 
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9äöüß]/g, '')
@@ -203,6 +243,8 @@ function findDuplicate (hash, key) {
 
 // Beleg-Dateien + Angaben aus einer Mail (oder einem Scan) bestimmen
 export async function analyze (cfg, { source, pdf, pdfName, from, subject, mailDate, text }) {
+  let toLine = ''
+  const riskyAtts = []
   let pdfBuf = pdf || null
   let fileName = pdfName || ''
   let xml = ''
@@ -211,6 +253,8 @@ export async function analyze (cfg, { source, pdf, pdfName, from, subject, mailD
     const parsed = await simpleParser(source, { skipImageLinks: true, skipTextToHtml: true })
     bodyText = parsed.text || String(parsed.html || '').replace(/<[^>]+>/g, ' ')
     const atts = parsed.attachments || []
+    toLine = [parsed.to && parsed.to.text, parsed.cc && parsed.cc.text].filter(Boolean).join(' ')
+    for (const a of atts) { const r = scanAttachment({ filename: a.filename, contentType: a.contentType, content: a.content }); if (r.danger) riskyAtts.push(r.danger) }
     const pdfs = atts.filter(a => /pdf/i.test(a.contentType) || /\.pdf$/i.test(a.filename || ''))
     pdfs.sort((a, b) => (/rechnung|invoice|faktura|beleg/i.test(b.filename || '') ? 1 : 0) - (/rechnung|invoice|faktura|beleg/i.test(a.filename || '') ? 1 : 0))
     if (pdfs[0]) { pdfBuf = pdfs[0].content; fileName = pdfs[0].filename || 'rechnung.pdf' }
@@ -234,22 +278,29 @@ export async function analyze (cfg, { source, pdf, pdfName, from, subject, mailD
     amount: e && e.amount != null ? e.amount : (k ? k.amount : null),
     currency: (e && e.currency) || (k && k.currency) || 'EUR',
     einvoice: e ? e.kind : '',
-    private: k ? k.private : false,
+    content: (k && k.content) || (e && e.content) || '',
+    assignment: k ? k.assignment : 'unklar',
     reason: k ? k.reason : 'E-Rechnung',
     pdf: pdfBuf, fileName, xml: xml && e ? xml : ''
   }
   info.ym = ymOf(info.date, mailDate)
+  // Firma: zuerst wörtlich im Beleg/der Mail suchen, sonst Einschätzung der KI
+  info.brand = detectCompany(`${text2}\n${bodyText}\n${toLine || ''}\n${xml || ''}`, cfg) || (k && k.assignment === 'firma' ? k.company : '')
+  // Sicherheit: riskante PDF/Anhänge → Beleg gesperrt
+  info.risk = []
+  if (pdfBuf) info.risk.push(...pdfRisk(pdfBuf))
+  for (const a of riskyAtts) info.risk.push(a)
   return info
 }
 
 function insertInvoice (f) {
   const t = now()
   const r = db.prepare(`INSERT INTO invoices (source, account_id, mail_id, msgid, from_addr, subject, supplier, number, inv_date, amount, currency, einvoice,
-    file, file_name, file_hash, xml_file, dedupe, folder, uid, same_message, suggestion, hint, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    file, file_name, file_hash, xml_file, dedupe, folder, uid, same_message, suggestion, hint, status, created_at, updated_at, brand, risk, content)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(f.source, f.account_id ?? null, f.mail_id ?? null, f.msgid ?? null, f.from_addr ?? null, f.subject ?? null, f.supplier || '', f.number || '', f.inv_date || '',
       f.amount ?? null, f.currency || 'EUR', f.einvoice || '', f.file ?? null, f.file_name ?? null, f.file_hash ?? null, f.xml_file ?? null, f.dedupe ?? null,
-      f.folder ?? null, f.uid ?? null, f.same_message ? 1 : 0, f.suggestion ?? null, f.hint ?? null, f.status, t, t)
+      f.folder ?? null, f.uid ?? null, f.same_message ? 1 : 0, f.suggestion ?? null, f.hint ?? null, f.status, t, t, f.brand || null, f.risk ? JSON.stringify(f.risk) : null, f.content || null)
   return byId.get(Number(r.lastInsertRowid))
 }
 
@@ -265,8 +316,10 @@ function storeDocs (info) {
 }
 
 function suggestionFor (info, from) {
+  if (info.brand) return 'business'
   const learned = learnedSuggestion(supplierKey(info.supplier, from))
-  return learned || (info.private ? 'private' : 'business')
+  if (learned) return learned
+  return info.assignment === 'firma' ? 'business' : info.assignment === 'privat' ? 'private' : 'check'
 }
 
 // ---------- Mail im Posteingang eines Postfachs ist eine Rechnung ----------
@@ -281,13 +334,20 @@ export async function handleMailInvoice (ctx, acc, rec, client) {
   const src = (await client.fetchOne(String(rec.uid), { source: true }, { uid: true })).source
   const info = await analyze(cfg, { source: src, from: rec.from_addr, subject: rec.subject, mailDate: rec.date })
   if (!info.isInvoice && !info.pdf && !info.xml) return null // Zahlungsmeldung o. ä.: nur einsortieren
+  if (info.risk.length) {
+    // Gefährlicher Beleg: nicht kopieren, nicht ablegen – Mail kommt nach „Achtung Verdacht“
+    insertInvoice({ source: 'mail', account_id: acc.id, mail_id: rec.id, msgid: rec.msgid, from_addr: rec.from_addr, subject: rec.subject, ...storeDocs(info), brand: info.brand,
+      supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, amount: info.amount, currency: info.currency, status: 'blocked', risk: info.risk, hint: 'Beleg gesperrt: ' + info.risk.join('; ') })
+    log('warn', `Rechnung „${rec.subject}“ von ${rec.from_addr} gesperrt: ${info.risk.join('; ')}`)
+    return { blocked: 'Gefährlicher Rechnungsanhang: ' + info.risk.join('; ') }
+  }
   const docs = storeDocs(info)
   const key = dedupeKey(info)
   const dup = findDuplicate(docs.file_hash, key)
   const base = {
     source: 'mail', account_id: acc.id, mail_id: rec.id, msgid: rec.msgid, from_addr: rec.from_addr, subject: rec.subject,
-    supplier: info.supplier, number: info.number, inv_date: info.date, amount: info.amount, currency: info.currency, einvoice: info.einvoice,
-    ...docs, dedupe: key, suggestion: suggestionFor(info, rec.from_addr), hint: info.isInvoice ? info.reason : 'KI: eher keine Rechnung – bitte prüfen'
+    supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, amount: info.amount, currency: info.currency, einvoice: info.einvoice,
+    ...docs, dedupe: key, brand: info.brand, suggestion: suggestionFor(info, rec.from_addr), hint: info.isInvoice ? info.reason : 'KI: eher keine Rechnung – bitte prüfen'
   }
   if (dup) {
     insertInvoice({ ...base, status: 'duplicate', hint: `doppelt – schon vorhanden (#${dup.id})` })
@@ -373,12 +433,18 @@ export async function processScans (ctx, stats) {
       const hash = crypto.createHash('sha256').update(pdf).digest('hex')
       const msgid = `<scan-${hash.slice(0, 24)}@mail-sortierer.invalid>`
       const info = await analyze(cfg, { pdf, pdfName: name, from: 'Scanner', subject: name, mailDate: fs.statSync(file).mtime })
+      if (info.risk.length) {
+        insertInvoice({ source: 'scan', msgid, from_addr: 'Scanner', subject: name, ...storeDocs(info), brand: info.brand, supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, amount: info.amount, status: 'blocked', risk: info.risk, hint: 'Datei gesperrt: ' + info.risk.join('; ') })
+        moveScanFile(dir, file, 'gesperrt')
+        log('warn', `Scan ${name} gesperrt: ${info.risk.join('; ')}`)
+        continue
+      }
       const docs = storeDocs(info)
       const key = dedupeKey(info)
       const dup = findDuplicate(docs.file_hash, key)
       const base = {
-        source: 'scan', msgid, from_addr: 'Scanner', subject: name, supplier: info.supplier, number: info.number, inv_date: info.date,
-        amount: info.amount, currency: info.currency, einvoice: info.einvoice, ...docs, dedupe: key,
+        source: 'scan', msgid, from_addr: 'Scanner', subject: name, supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, content: info.content,
+        amount: info.amount, currency: info.currency, einvoice: info.einvoice, ...docs, dedupe: key, brand: info.brand,
         suggestion: suggestionFor(info, ''), hint: info.isInvoice ? info.reason : 'KI: eher keine Rechnung – bitte prüfen'
       }
       if (dup) {
@@ -435,6 +501,7 @@ async function relocate (client, inv, parts, flagged) {
 
 export async function lexwareUpload (inv) {
   const cfg = getConfig()
+  if (inv.status === 'blocked') throw new Error('Gesperrter Beleg – wird nicht weitergegeben.')
   const key = getSecret('lexwareKey')
   if (!key) throw new Error('Kein Lexware-API-Schlüssel hinterlegt (Einstellungen → Rechnungen).')
   const p = filePath(inv.file)
@@ -531,6 +598,17 @@ export async function reopen (ids) {
   return list.length
 }
 
+// Gesperrten Beleg bewusst freigeben (nur Lexware-Versand möglich, Vorschau bleibt gesperrt)
+export function release (ids) {
+  let n = 0
+  for (const inv of ids.map(getInvoice).filter(i => i && i.status === 'blocked' && i.file)) {
+    upd(inv.id, { status: 'open', suggestion: inv.brand ? 'business' : 'check', hint: 'trotz Warnung freigegeben' })
+    log('warn', `Gesperrter Beleg #${inv.id} (${inv.supplier || inv.from_addr}) von Hand freigegeben`)
+    n++
+  }
+  return n
+}
+
 // Angaben von Hand korrigieren; anderer Monat → Ablage-Mail wandert mit
 export async function editInvoice (id, f) {
   const inv = getInvoice(id)
@@ -538,9 +616,10 @@ export async function editInvoice (id, f) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(f.inv_date) ? f.inv_date : ''
   const amount = f.amount === '' || f.amount == null ? null : Number(String(f.amount).replace(/\./g, '').replace(',', '.'))
   const next = {
-    supplier: String(f.supplier || '').slice(0, 120), number: String(f.number || '').slice(0, 80), inv_date: date,
+    supplier: String(f.supplier || '').slice(0, 120), number: String(f.number || '').slice(0, 80), inv_date: date, content: String(f.content ?? inv.content ?? '').slice(0, 120),
     amount: Number.isFinite(amount) ? Math.round(amount * 100) / 100 : null
   }
+  if (f.brand !== undefined) next.brand = companyList(cfg0()).includes(f.brand) ? f.brand : null
   next.dedupe = dedupeKey(next)
   const cfg = getConfig()
   const oldYm = ymOf(inv.inv_date, inv.created_at); const newYm = ymOf(next.inv_date, inv.created_at)
@@ -560,4 +639,5 @@ export async function dropForMail (mailId) {
   }
 }
 
-export const STATUS = { open: 'Offen', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler' }
+const cfg0 = () => getConfig()
+export const STATUS = { open: 'Offen', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler', blocked: 'Gesperrt' }

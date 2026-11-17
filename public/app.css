@@ -112,10 +112,29 @@ tr.ist-sent td { opacity: .75; }
   .invoices, .invoices tbody { display: block; }
   .invoices tr { display: grid; grid-template-columns: 28px 1fr auto; gap: 4px 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
   .invoices td { display: block; border: 0; padding: 0; min-width: 0; }
-  .invoices td:nth-child(1) { grid-row: 1 / span 4; }
-  .invoices td:nth-child(3), .invoices td:nth-child(5), .invoices td:nth-child(6) { grid-column: 2 / span 2; }
+  .invoices td:nth-child(1) { grid-row: 1 / span 5; }
+  .invoices td:not(:first-child) { grid-column: 2 / span 2; }
+  .invoices td.num { text-align: left; }
   .invoices td.nowrap { white-space: normal; }
 }
 /* Nach Aktionen bleibt die Liste an ihrer Stelle; Meldung bleibt oben sichtbar */
 tr[id] { scroll-margin-top: 70px; }
 .main > .alert { position: sticky; top: 8px; z-index: 5; box-shadow: 0 4px 14px rgba(0,0,0,.08); background: var(--card); }
+details.risk { margin-top: 6px; font-size: 12.5px; border-radius: 8px; padding: 4px 8px; border: 1px solid; }
+details.risk.bad, div.risk.bad { border-color: var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 7%, transparent); }
+details.risk.warn { border-color: var(--warn); color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, transparent); }
+details.risk summary { color: inherit; font-size: 12.5px; }
+details.risk ul { margin: 4px 0 2px 18px; padding: 0; }
+div.risk { margin-top: 4px; padding: 3px 8px; border: 1px solid; border-radius: 8px; }
+.pill.brand { border-color: var(--good); color: var(--good); }
+.check-text { color: var(--info); font-weight: 600; }
+.card.month { padding: 14px 16px; }
+.month-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.month-head h2 { margin: 0 0 2px; }
+.invoices .what { word-break: break-word; }
+@media (min-width: 701px) {
+  .tbl.fixed { table-layout: fixed; }
+  .tbl.fixed .c-sel { width: 40px; } .tbl.fixed .c-date { width: 100px; } .tbl.fixed .c-from { width: 27%; }
+  .tbl.fixed .c-amt { width: 110px; } .tbl.fixed .c-act { width: 310px; }
+  .tbl.fixed td.nowrap form.inline { flex-wrap: wrap; }
+}

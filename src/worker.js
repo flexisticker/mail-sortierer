@@ -5,7 +5,8 @@ import { getConfig, activeCategories, categoryById, isNight, targetLabel } from 
 import { enabledAccounts, getAccount, accountLabel, migrateAccounts } from './accounts.js'
 import { connect, withClient, ensureFolders, categoryPath, pathString, readMessages, readIds, moveMessage, findByMsgId, listFolders } from './imap.js'
 import { classify } from './classify.js'
-import { recordCorrection, addExample, learnSender } from './learn.js'
+import { recordCorrection, addExample, learnSender, isTrusted, isKnown } from './learn.js'
+import { phishCheck, brandList, blocklistCheck, senderIp, pdfRisk } from './security.js'
 import { handleMailInvoice, processScans, collecting, dropForMail } from './invoice.js'
 
 const MAX_RUN_MS = 20 * 60 * 1000
@@ -20,10 +21,10 @@ function upd (id, fields) {
 function insert (acc, m, d, status, folder, uidvalidity) {
   const t = now()
   db.prepare(`INSERT INTO mails (account_id, msgid, from_addr, from_name, domain, subject, date, snippet, hints, folder, uid, uidvalidity,
-    decision, source, confidence, reason, status, created_at, updated_at, moved_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    decision, source, confidence, reason, status, created_at, updated_at, moved_at, risk, risk_reasons)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(acc.id, m.msgid, m.from_addr, m.from_name, m.domain, m.subject, m.date, m.snippet, m.hints, folder, m.uid, String(uidvalidity),
-      d.decision, d.source, d.confidence ?? null, d.reason || '', status, t, t, null)
+      d.decision, d.source, d.confidence ?? null, d.reason || '', status, t, t, null, d.risk ?? null, d.riskReasons ? JSON.stringify(d.riskReasons) : null)
   return byMsgid.get(acc.id, m.msgid)
 }
 
@@ -139,7 +140,7 @@ async function processInbox (ctx, acc, client, cfg, map, stats, started, budget)
           }
           continue
         }
-        const d = await classify(m, cfg)
+        const d = await assess(m, cfg, stats)
         stats.read++
         if (d.decision === 'inbox') { insert(acc, m, d, 'kept', 'INBOX', uv); stats.kept++; continue }
         const r = insert(acc, m, d, 'planned', 'INBOX', uv)
@@ -159,6 +160,50 @@ async function processInbox (ctx, acc, client, cfg, map, stats, started, budget)
   } finally { lock.release() }
 }
 
+// Sicherheitsprüfung → Spam/Verdacht, sonst normale Einordnung (Regeln, Kontakte, KI)
+async function assess (m, cfg, stats) {
+  const sec = cfg.security
+  const trusted = isTrusted(m)
+  const known = isKnown(m)
+  const atts = m._attachments || []
+  const res = phishCheck({ ...m, text: m._text, html: m._html, headers: m._headers, attachments: atts }, { brands: brandList(sec.brands), trusted, known })
+  // PDFs mit Skripten o. Ä. (soweit schon geladen)
+  for (const a of atts) {
+    if (/\.pdf$/i.test(a.filename) && a.content && a.content.length > 0 && a.content.subarray(0, 5).toString('latin1') === '%PDF-') {
+      const r = pdfRisk(a.content).filter(x => x !== 'keine gültige PDF-Datei')
+      if (r.length) { res.reasons.push({ p: 60, t: `PDF „${a.filename}“ ${r.join(', ')}` }); if (!trusted) res.score += 60; res.dangerous = true }
+    }
+  }
+  let spam = false
+  if (sec.spamHeader && res.spamHeader && !trusted && !known) spam = true
+  if (sec.dnsbl && !trusted && !known) {
+    try {
+      const bl = await blocklistCheck({ ip: senderIp(m._headers), domains: [m.domain, ...(res.linkHosts || [])] }, sec)
+      if (bl.hits.length) { spam = true; for (const h of bl.hits) res.reasons.push({ p: 20, t: h }); res.score += 20 * bl.hits.length }
+      if (bl.warning && stats) stats.dnsWarning = bl.warning
+    } catch { /* Sperrliste nicht erreichbar → ohne */ }
+  }
+  const reasons = res.reasons.slice(0, 8).map(r => r.t)
+  const top = reasons.slice(0, 3).join('; ')
+  if ((res.dangerous && sec.blockDangerous) || res.score >= Number(sec.phishThreshold || 60)) {
+    if (stats) stats.suspicious = (stats.suspicious || 0) + 1
+    return { decision: 'verdacht', source: 'security', confidence: Math.min(100, res.score), reason: top || 'verdächtig', risk: res.score, riskReasons: reasons }
+  }
+  if (spam) {
+    if (stats) stats.spam = (stats.spam || 0) + 1
+    return { decision: 'spam', source: 'security', confidence: Math.min(100, res.score), reason: top || 'Spam', risk: res.score, riskReasons: reasons }
+  }
+  const d = await classify(m, cfg)
+  if (!trusted && d.suspicion >= 80) {
+    res.score += 25; reasons.push(`KI hält die Mail für Betrug (${d.suspicion} %)`)
+    if (res.score >= Number(sec.phishThreshold || 60)) {
+      if (stats) stats.suspicious = (stats.suspicious || 0) + 1
+      return { decision: 'verdacht', source: 'security', confidence: Math.min(100, res.score), reason: reasons.slice(0, 3).join('; '), risk: res.score, riskReasons: reasons }
+    }
+  }
+  return { ...d, risk: res.score, riskReasons: res.score >= Number(sec.warnThreshold || 30) ? reasons : null }
+}
+
 async function moveRecord (ctx, acc, client, r, map, stats) {
   const dest = destPath(map, r.decision)
   if (!dest) { upd(r.id, { status: 'kept', reason: (r.reason || '') + ' (Ordner abgeschaltet)' }); return }
@@ -167,6 +212,13 @@ async function moveRecord (ctx, acc, client, r, map, stats) {
     if (!exists || !exists.length) { upd(r.id, { status: 'gone', error: 'nicht mehr im Posteingang' }); return }
     if (r.decision === 'rechnungen' && collecting()) {
       const placed = await handleMailInvoice(ctx, acc, r, client)
+      if (placed && placed.blocked) {
+        const v = map.verdacht
+        const newUid = await moveMessage(client, r.uid, v)
+        upd(r.id, { status: 'moved', decision: 'verdacht', source: 'security', folder: v, uid: newUid, moved_at: now(), reason: placed.blocked, risk: 80, risk_reasons: JSON.stringify([placed.blocked]) })
+        stats.moved++; stats.suspicious = (stats.suspicious || 0) + 1
+        return
+      }
       if (placed) { upd(r.id, { status: 'moved', folder: placed.folder, uid: placed.uid, moved_at: now(), error: null }); stats.moved++; stats.invoices++; return }
       if (db.prepare('SELECT 1 FROM invoices WHERE mail_id = ?').get(r.id)) stats.invoices++
     }
@@ -221,15 +273,16 @@ async function run (why) {
         log('error', `${accountLabel(acc)}: ${e.authenticationFailed ? 'Anmeldung fehlgeschlagen (Benutzer/Passwort)' : text}`)
         if (/Ollama/.test(text)) { failed = text; break } // KI weg → später weiter
       }
-      for (const k of Object.keys(stats)) total[k] += stats[k]
+      for (const k of Object.keys(stats)) if (typeof stats[k] === 'number') total[k] = (total[k] || 0) + stats[k]
+      if (stats.dnsWarning) total.dnsWarning = stats.dnsWarning
     }
     if (!failed) {
       try { await processScans(ctx, total) } catch (e) { failed = 'Scanner: ' + e.message; log('error', failed) }
     }
     const msg = `Durchlauf (${why}): ${total.read} gelesen, ${total.moved} verschoben, ${total.planned} im Probelauf vorgemerkt, ${total.kept} bleiben im Posteingang, ${total.corrections} Korrekturen` +
-      (total.invoices ? `, ${total.invoices} Rechnungen` : '') + (total.scans ? `, ${total.scans} Scans` : '') + (total.errors ? `, ${total.errors} Fehler` : '') + (total.left > 0 ? `, ${total.left} warten noch` : '')
+      (total.invoices ? `, ${total.invoices} Rechnungen` : '') + (total.suspicious ? `, ${total.suspicious} verdächtig` : '') + (total.spam ? `, ${total.spam} Spam` : '') + (total.scans ? `, ${total.scans} Scans` : '') + (total.errors ? `, ${total.errors} Fehler` : '') + (total.left > 0 ? `, ${total.left} warten noch` : '')
     if (total.read || total.moved || total.corrections || total.errors || total.scans) log(total.errors ? 'warn' : 'info', msg)
-    setStatus({ running: false, lastEnd: now(), lastOk: failed ? undefined : now(), lastError: failed || total.scanError || null, last: total, backlogLeft: total.left })
+    setStatus({ running: false, lastEnd: now(), lastOk: failed ? undefined : now(), lastError: failed || total.scanError || null, dnsWarning: total.dnsWarning || null, last: total, backlogLeft: total.left })
   } catch (e) {
     const text = String((e && (e.responseText || e.message)) || e)
     log('error', `Durchlauf abgebrochen: ${text}`)

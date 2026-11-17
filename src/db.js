@@ -112,6 +112,16 @@ if (!db.prepare('PRAGMA table_info(mails)').all().some(c => c.name === 'account_
     DROP TABLE mails_alt;
     COMMIT;`)
 }
+// Spalten, die später dazugekommen sind
+function addColumn (table, col, type) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`)
+}
+addColumn('mails', 'risk', 'INTEGER')          // Punktzahl der Sicherheitsprüfung
+addColumn('mails', 'risk_reasons', 'TEXT')     // Gründe (JSON)
+addColumn('invoices', 'brand', 'TEXT')         // Firma/Marke (z. B. Flexisticker, 3dbymicha)
+addColumn('invoices', 'risk', 'TEXT')
+addColumn('invoices', 'content', 'TEXT')       // worum es geht (kurz)          // Sicherheitsbefund des Belegs (JSON) – gesperrt, wenn gesetzt
+
 db.exec(`
 CREATE INDEX IF NOT EXISTS mails_status ON mails(status);
 CREATE INDEX IF NOT EXISTS mails_from ON mails(from_addr);

@@ -28,6 +28,21 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nie etwas gelöscht** – nur ver
 - Seite **Rechnungen:** „Zur Buchhaltung“ (Lexware Office, „Belege zu prüfen“), „Privat“ (`Rechnungen/Privat/JJJJ`),
   „Keine Rechnung“. Entscheidungen werden je Lieferant gemerkt und vorgeschlagen.
 
+## Sicherheit (ab 1.2)
+
+- Jede Mail wird **vor** der Einordnung geprüft – Anhänge werden dabei nie geöffnet, nur als Bytes untersucht:
+  ausführbare/getarnte Anhänge (`.pdf.exe`, Programmdatei als PDF), Makros (`.docm`, `vbaProject.bin` in `.docx`), HTML-Anhänge,
+  Archive mit gefährlichem Inhalt oder Passwort, PDFs mit JavaScript/Launch/versteckten Dateien.
+- Phishing-Merkmale: SPF/DKIM/DMARC fehlgeschlagen, Anzeigename einer Marke mit fremder Domain, nachgemachte Domains
+  (`paypa1.com`, `dhI-paket.de`, `xn--…`), Links mit anderem Ziel als angezeigt, IP-Links, Kurz-Links, Druck + Passwortabfrage,
+  dazu die Einschätzung der lokalen KI. Punktzahl ≥ Schwelle → Ordner **„Achtung Verdacht“**.
+- **Spam:** Spam-Kennzeichnung des Mailservers und Sperrlisten (Spamhaus ZEN/DBL, SpamCop, SURBL per DNS – es gehen nur
+  IP-Adresse/Domain an den Betreiber, nie Inhalte) → Ordner **„Spam“**.
+- Fehlalarm: „ist harmlos“ bzw. Mail in Outlook herausziehen → Absender gilt als vertrauenswürdig.
+- Eigene Ordner mit Beschreibung für die KI (Einstellungen → Ordner).
+- Rechnungen: Firma/privat aus der Anschrift („Michael Zatti – Flexisticker“, „… – 3dbymicha“), sonst KI nach Inhalt,
+  im Zweifel **„Bitte prüfen“**. Ansicht nach Monat mit Lieferant, „Worum geht’s“, Betrag; **„Ab zu Lexware“** nur auf Klick.
+
 ## Einrichten auf Unraid
 
 1. **Ollama** läuft schon. Modell laden (Konsole des Ollama-Containers):

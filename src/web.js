@@ -2,15 +2,16 @@
 import express from 'express'
 import path from 'node:path'
 import fs from 'node:fs'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { db, now, log } from './db.js'
 import { hasUsers, createUser, login, logout, sessionFor, verifyPassword, changePassword } from './auth.js'
-import { getConfig, saveConfig, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
+import { getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
 import { runOnce, isRunning, getStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
-import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, editInvoice, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
+import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release, editInvoice, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
 import { listModels } from './ollama.js'
 import { classify } from './classify.js'
@@ -31,6 +32,16 @@ function back (res, to, { msg, err } = {}) {
 }
 
 const int = (v, min, max, def) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def }
+// Warnhinweise der Sicherheitsprüfung
+function riskBox (r) {
+  let reasons = []
+  try { reasons = JSON.parse(r.risk_reasons || '[]') } catch { reasons = [] }
+  if (!reasons.length) return ''
+  const sev = r.decision === 'verdacht' ? 'bad' : 'warn'
+  return `<details class="risk ${sev}"><summary>⚠ ${r.decision === 'verdacht' ? 'Verdacht' : r.decision === 'spam' ? 'Spam' : 'Auffällig'} (${Number(r.risk) || 0} Punkte) – keine Links anklicken, keine Anhänge öffnen</summary>
+    <ul>${reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>`
+}
+
 // Nach einer Aktion zur Zeile davor springen – so bleibt man an derselben Stelle der Liste
 const anchor = (rows, i, p) => i > 0 ? `<input type="hidden" name="anker" value="${p}${rows[i - 1].id}">` : ''
 const errText = (e) => String((e && (e.responseText || e.message)) || e).slice(0, 300)
@@ -139,6 +150,9 @@ export function createApp () {
     const rules = db.prepare("SELECT COUNT(*) n FROM rules WHERE state = 'active'").get().n
     const suggestions = db.prepare("SELECT COUNT(*) n FROM rules WHERE state = 'suggest'").get().n
     const openInv = db.prepare("SELECT COUNT(*) n FROM invoices WHERE status IN ('open','error')").get().n
+    const checkInv = db.prepare("SELECT COUNT(*) n FROM invoices WHERE status IN ('open','error') AND suggestion = 'check'").get().n
+    const sus = db.prepare("SELECT COUNT(*) n FROM mails WHERE decision = 'verdacht' AND created_at >= ?").get(new Date(Date.now() - 7 * 864e5).toISOString()).n
+    const spamN = db.prepare("SELECT COUNT(*) n FROM mails WHERE decision = 'spam' AND created_at >= ?").get(new Date(Date.now() - 7 * 864e5).toISOString()).n
     const target = collecting(cfg)
     const s = req.session
     const anyLive = accounts.some(a => a.mode === 'live')
@@ -152,7 +166,9 @@ export function createApp () {
     const body = `
     <h1>Übersicht</h1>
     ${steps.every(x => x[0]) ? '' : `<section class="card"><h2>Erste Schritte</h2><ol class="steps">${steps.map(([done, text, href]) => `<li class="${done ? 'done' : ''}"><a href="${href}">${esc(text)}</a></li>`).join('')}</ol></section>`}
-    ${openInv ? `<section class="card"><h2>Rechnungen</h2><p><b>${openInv}</b> offene Rechnung(en) warten auf „Zur Buchhaltung“ oder „Privat“.</p><a class="btn primary" href="/rechnungen">Rechnungen ansehen</a></section>` : ''}
+    ${openInv ? `<section class="card"><h2>Rechnungen</h2><p><b>${openInv}</b> offene Rechnung(en) warten auf „Zur Buchhaltung“ oder „Privat“${checkInv ? `, davon <b>${checkInv}</b> zum Prüfen (Firma oder privat?)` : ''}.</p><a class="btn primary" href="/rechnungen">Rechnungen ansehen</a></section>` : ''}
+    ${sus || spamN ? `<section class="card"><h2>Sicherheit (7 Tage)</h2><p>${sus ? `<b>${sus}</b> verdächtige Mail(s) nach „${esc(targetLabel('verdacht', cfg))}“ verschoben. ` : ''}${spamN ? `<b>${spamN}</b> Spam-Mail(s) aussortiert.` : ''}</p>
+      <div class="row wrap">${sus ? '<a class="btn" href="/mails?ordner=verdacht">Verdacht ansehen</a>' : ''}${spamN ? '<a class="btn" href="/mails?ordner=spam">Spam ansehen</a>' : ''}</div></section>` : ''}
     <section class="card" id="postfaecher"><h2>Postfächer</h2>
       ${accounts.length ? `<div class="table-wrap"><table class="tbl"><tbody>
       ${accounts.map(a => { const x = accSt[a.id] || {}; return `<tr>
@@ -272,10 +288,12 @@ export function createApp () {
         <td><span class="pill cat">${esc(targetLabel(r.decision, cfg))}</span>
           <span class="pill st">${esc(STATUS_LABEL[r.status] || r.status)}</span>
           <div class="muted small">${esc(SOURCE_LABEL[r.source] || r.source || '')}${r.confidence != null && r.source === 'ki' ? ` · ${r.confidence} %` : ''}${r.reason ? ' · ' + esc(r.reason) : ''}</div>
-          ${r.error ? `<div class="bad small">${esc(r.error)}</div>` : ''}</td>
+          ${r.error ? `<div class="bad small">${esc(r.error)}</div>` : ''}
+          ${riskBox(r)}</td>
         <td class="nowrap">${r.status === 'gone' ? '' : `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}">
             <select name="target" aria-label="Richtiger Ordner">${options(targets, r.decision)}</select><button class="btn sm">Ändern</button></form>
-          ${['planned', 'moved', 'kept'].includes(r.status) && r.source !== 'correction' ? `<form method="post" action="/mails/${r.id}/passt" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><button class="btn sm ghost" title="Richtig – zählt für eine feste Regel">passt</button></form>` : ''}`}</td>
+          ${(r.decision === 'verdacht' || r.decision === 'spam') && r.status !== 'gone' ? `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="target" value="inbox"><button class="btn sm" data-confirm="Absender ${esc(r.from_addr)} als vertrauenswürdig merken und die Mail in den Posteingang legen?">ist harmlos</button></form>` : ''}
+          ${['planned', 'moved', 'kept'].includes(r.status) && r.source !== 'correction' && r.source !== 'security' ? `<form method="post" action="/mails/${r.id}/passt" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><button class="btn sm ghost" title="Richtig – zählt für eine feste Regel">passt</button></form>` : ''}`}</td>
       </tr>`).join('') || '<tr><td colspan="5" class="muted">Keine Mails.</td></tr>'}
       </tbody></table></div>
     <div class="row between">
@@ -319,7 +337,7 @@ export function createApp () {
       <p class="muted">Eine Regel entsteht aus deinen Korrekturen. Nach ${cfg.ruleAfter} gleichen Korrekturen gilt sie fest (vorher „Vorschlag“). Schickt ein Absender Verschiedenes, wird die Regel ausgeschaltet – dann entscheidet die KI mit deinen Beispielen.</p>
       <div class="table-wrap"><table class="tbl">
       <thead><tr><th>Absender / Domain</th><th>Ziel</th><th>Zustand</th><th>Herkunft</th><th></th></tr></thead><tbody>
-      ${rules.map(r => `<tr><td>${r.kind === 'domain' ? '<span class="pill">Domain</span> ' : ''}${esc(r.value)}</td>
+      ${rules.map(r => `<tr><td>${r.kind === 'domain' ? '<span class="pill">Domain</span> ' : r.kind === 'trust' ? '<span class="pill good">vertrauenswürdig</span> ' : ''}${esc(r.value)}</td>
         <td><form method="post" action="/regeln/${r.id}" class="inline">${csrf(s)}<input type="hidden" name="aktion" value="ziel"><select name="target">${options(targets, r.target)}</select><button class="btn sm">ok</button></form></td>
         <td><span class="pill ${r.state === 'active' ? 'good' : r.state === 'suggest' ? 'warn' : ''}">${STATE[r.state] || r.state}</span> <span class="muted small">${r.hits}×</span></td>
         <td class="small muted">${esc(ORIGIN[r.origin] || r.origin || '')} · ${fmtDate(r.updated_at)}</td>
@@ -424,13 +442,18 @@ export function createApp () {
     const jahr = String(req.query.jahr || '')
     const monat = String(req.query.monat || '')
     const q = String(req.query.q || '').trim().slice(0, 100)
+    const zu = String(req.query.zuordnung || '')
+    const companies = companyList(cfg)
     const where = []; const args = []
+    if (zu === 'privat') where.push("(status = 'private' OR (status IN ('open','error') AND suggestion = 'private'))")
+    else if (zu === 'pruefen') where.push("status IN ('open','error') AND suggestion = 'check'")
+    else if (zu) { where.push('brand = ?'); args.push(zu) }
     if (status === 'open') where.push("status IN ('open', 'error')")
     else if (status) { where.push('status = ?'); args.push(status) }
     const ym = "COALESCE(NULLIF(substr(inv_date, 1, 7), ''), substr(created_at, 1, 7))"
     if (jahr) { where.push(`substr(${ym}, 1, 4) = ?`); args.push(jahr) }
     if (monat) { where.push(`substr(${ym}, 6, 2) = ?`); args.push(monat.padStart(2, '0')) }
-    if (q) { where.push('(supplier LIKE ? OR number LIKE ? OR from_addr LIKE ? OR subject LIKE ?)'); args.push(...Array(4).fill(`%${q}%`)) }
+    if (q) { where.push('(supplier LIKE ? OR number LIKE ? OR from_addr LIKE ? OR subject LIKE ? OR content LIKE ?)'); args.push(...Array(5).fill(`%${q}%`)) }
     const w = where.length ? 'WHERE ' + where.join(' AND ') : ''
     const rows = db.prepare(`SELECT * FROM invoices ${w} ORDER BY ${ym} DESC, inv_date DESC, id DESC LIMIT 500`).all(...args)
     const sum = rows.filter(r => r.amount != null && r.status !== 'duplicate').reduce((a, r) => a + r.amount, 0)
@@ -441,50 +464,82 @@ export function createApp () {
     const here = req.originalUrl
     const money = (v, c) => v == null ? '–' : v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + (c && c !== 'EUR' ? c : '€')
     const ymd = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : ''
-    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['', 'Alle']]
-    const body = `
-    <h1>Rechnungen</h1>
-    ${target ? '' : '<div class="alert bad">Noch kein Sammel-Postfach gewählt – <a href="/einstellungen#rechnungen">Einstellungen → Rechnungen</a>.</div>'}
-    ${hasSecret('lexwareKey') ? '' : '<div class="alert bad">Noch kein Lexware-Schlüssel hinterlegt – „Zur Buchhaltung“ geht erst danach (<a href="/einstellungen#rechnungen">Einstellungen</a>).</div>'}
-    <form method="get" action="/rechnungen" class="filters">
-      <select name="status">${options(statusOpts, status)}</select>
-      <select name="jahr"><option value="">Alle Jahre</option>${options(years.map(y => [y, y]), jahr)}</select>
-      <select name="monat"><option value="">Alle Monate</option>${options(Array.from({ length: 12 }, (_, i) => [String(i + 1).padStart(2, '0'), monthName('2000-' + String(i + 1).padStart(2, '0'))]), monat)}</select>
-      <input name="q" value="${esc(q)}" placeholder="Lieferant, Nummer, Absender">
-      <button class="btn">Filtern</button>
-    </form>
-    <p class="muted">${rows.length} Rechnungen · Summe ${money(sum)}${status === 'open' ? ' · Offene haben in Outlook ein Fähnchen.' : ''}</p>
-    <form method="post" action="/rechnungen/aktion" id="ibulk">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"></form>
-    <div class="table-wrap"><table class="tbl invoices">
-      <thead><tr><th><input type="checkbox" data-all="isel" aria-label="Alle wählen"></th><th>Datum</th><th>Lieferant / Nummer</th><th class="num">Betrag</th><th>Herkunft</th><th>Aktion</th></tr></thead>
-      <tbody>
-      ${rows.map((r, i) => `<tr class="ist-${esc(r.status)}" id="r${r.id}">
+    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['blocked', `Gesperrt (${counts.blocked || 0})`], ['', 'Alle']]
+    // nach Monat gruppieren (Monat = Rechnungsdatum)
+    const ymOfRow = (r) => (/^\d{4}-\d{2}/.test(r.inv_date || '') ? r.inv_date : r.created_at).slice(0, 7)
+    const groups = []
+    for (const r of rows) { const k = ymOfRow(r); let g = groups[groups.length - 1]; if (!g || g.ym !== k) { g = { ym: k, rows: [] }; groups.push(g) } g.rows.push(r) }
+    const isOpen = (r) => r.status === 'open' || r.status === 'error'
+    const ready = (r) => isOpen(r) && r.file && r.suggestion !== 'check' && r.suggestion !== 'private'
+    const sumOf = (list) => list.filter(r => r.amount != null && r.status !== 'duplicate' && r.status !== 'noinvoice').reduce((a, r) => a + r.amount, 0)
+    let idx = -1
+    const rowHtml = (r) => { const i = ++idx; return `<tr class="ist-${esc(r.status)}" id="r${r.id}">
         <td><input type="checkbox" name="ids" value="${r.id}" form="ibulk" class="isel"></td>
         <td class="nowrap">${ymd(r.inv_date) || '<span class="muted">ohne Datum</span>'}</td>
-        <td><div class="from">${esc(r.supplier || r.from_addr || '?')}</div><div class="small">${r.number ? 'Nr. ' + esc(r.number) : '<span class="muted">ohne Nummer</span>'}
-          ${r.einvoice ? ` <span class="pill info">${r.einvoice === 'xrechnung' ? 'XRechnung' : 'ZUGFeRD'}</span>` : ''}
-          ${r.file ? ` · <a href="/rechnungen/${r.id}/datei" target="_blank" rel="noopener">${/\.xml$/i.test(r.file) ? 'XML' : 'PDF'} ansehen</a>` : ' · <span class="bad">kein Beleg angehängt</span>'}</div>
-          ${r.status === 'open' || r.status === 'error' ? `<div class="small ${r.suggestion === 'private' ? 'warn-text' : 'muted'}">Vorschlag: ${r.suggestion === 'private' ? 'Privat' : 'Geschäftlich'}${r.hint ? ' · ' + esc(r.hint) : ''}</div>` : `<div class="small muted">${esc(INV_STATUS[r.status] || r.status)}${r.decided_at ? ' · ' + fmtDate(r.decided_at) : ''}${r.hint && r.status === 'duplicate' ? ' · ' + esc(r.hint) : ''}</div>`}
+        <td><div class="from">${esc(r.supplier || r.from_addr || '?')}${r.brand ? ` <span class="pill brand">${esc(r.brand)}</span>` : ''}</div>
+          <div class="small muted">${r.number ? 'Nr. ' + esc(r.number) : 'ohne Nummer'}${r.einvoice ? ` <span class="pill info">${r.einvoice === 'xrechnung' ? 'XRechnung' : 'ZUGFeRD'}</span>` : ''}
+          · ${r.source === 'scan' ? 'Scan' : esc(accName[r.account_id] || 'Mail')}
+          ${r.risk ? ' · <span class="bad">Vorschau gesperrt</span>' : r.file ? ` · <a href="/rechnungen/${r.id}/datei" target="_blank" rel="noopener">${/\.xml$/i.test(r.file) ? 'XML' : 'PDF'} ansehen</a>` : ' · <span class="bad">kein Beleg</span>'}</div></td>
+        <td><div class="what">${esc(r.content || r.subject || '–')}</div>
+          ${r.status === 'blocked' ? `<div class="risk bad small">⚠ ${esc(r.hint || 'gesperrt')}</div>` : ''}
+          ${isOpen(r) ? `<div class="small ${r.suggestion === 'check' ? 'check-text' : r.suggestion === 'private' ? 'warn-text' : 'muted'}">${r.suggestion === 'check' ? '❓ Bitte prüfen: Firma oder privat?' : r.suggestion === 'private' ? 'Vorschlag: privat' : 'Vorschlag: geschäftlich' + (r.brand ? ' (' + esc(r.brand) + ')' : '')}</div>`
+            : `<div class="small muted">${esc(INV_STATUS[r.status] || r.status)}${r.decided_at ? ' · ' + fmtDate(r.decided_at) : ''}${r.hint && r.status === 'duplicate' ? ' · ' + esc(r.hint) : ''}</div>`}
           ${r.error ? `<div class="bad small">${esc(r.error)}</div>` : ''}
           <details><summary>Angaben ändern</summary><form method="post" action="/rechnungen/${r.id}/aendern" class="form two mini">${csrf(s)}<input type="hidden" name="anker" value="r${r.id}"><input type="hidden" name="zurueck" value="${esc(here)}">
             <label>Lieferant<input name="supplier" value="${esc(r.supplier)}" maxlength="120"></label>
+            <label>Worum geht’s<input name="content" value="${esc(r.content || '')}" maxlength="120"></label>
             <label>Nummer<input name="number" value="${esc(r.number)}" maxlength="80"></label>
             <label>Rechnungsdatum<input name="inv_date" type="date" value="${esc(r.inv_date)}"></label>
             <label>Betrag brutto<input name="amount" value="${r.amount != null ? esc(String(r.amount).replace('.', ',')) : ''}" inputmode="decimal"></label>
+            <label>Firma<select name="brand"><option value="">– keine / privat –</option>${options(companies.map(c => [c, c]), r.brand || '')}</select></label>
             <div class="row span"><button class="btn sm">Speichern</button></div></form></details></td>
-        <td class="num nowrap">${money(r.amount, r.currency)}</td>
-        <td class="small">${r.source === 'scan' ? 'Scan' : esc(accName[r.account_id] || 'Mail')}<div class="muted">${esc(r.source === 'scan' ? r.subject : r.from_addr)}</div></td>
-        <td class="nowrap">${(r.status === 'open' || r.status === 'error') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
-            <button class="btn sm primary" name="aktion" value="buchhaltung"${r.file ? '' : ' disabled'}>Zur Buchhaltung</button>
+        <td class="num nowrap"><b>${money(r.amount, r.currency)}</b></td>
+        <td class="nowrap">${isOpen(r) ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
+            <button class="btn sm primary" name="aktion" value="buchhaltung"${r.file ? '' : ' disabled'} data-confirm="${esc(`An Lexware senden?\n${r.supplier || r.from_addr} – ${r.content || ''} – ${money(r.amount, r.currency)}`)}">Ab zu Lexware</button>
             <button class="btn sm" name="aktion" value="privat">Privat</button>
             <button class="btn sm ghost" name="aktion" value="keine">Keine Rechnung</button></form>`
           : (r.status === 'private' || r.status === 'noinvoice') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
             <button class="btn sm ghost" name="aktion" value="oeffnen">Wieder öffnen</button></form>`
-          : r.status === 'sent' ? '<span class="pill good">in Lexware</span>' : ''}</td>
-      </tr>`).join('') || `<tr><td colspan="6" class="muted">${status === 'open' ? 'Keine offenen Rechnungen. 🎉' : 'Keine Rechnungen.'}</td></tr>`}
-      </tbody></table></div>
+          : r.status === 'sent' ? '<span class="pill good">in Lexware</span>'
+          : r.status === 'blocked' && r.file ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
+            <button class="btn sm ghost" name="aktion" value="freigeben" data-confirm="Dieser Beleg wurde als gefährlich gesperrt. Nur freigeben, wenn du dir sicher bist, dass er echt ist. Die Vorschau bleibt gesperrt. Trotzdem freigeben?">Trotzdem freigeben</button></form>` : ''}</td>
+      </tr>` }
+    const monthHead = (g) => {
+      const open = g.rows.filter(isOpen); const go = g.rows.filter(ready)
+      const by = {}
+      for (const r of g.rows.filter(r => r.amount != null && !['duplicate', 'noinvoice', 'blocked'].includes(r.status))) {
+        const k = r.status === 'private' || (isOpen(r) && r.suggestion === 'private') ? 'privat' : (isOpen(r) && r.suggestion === 'check') ? 'zu prüfen' : (r.brand || 'Firma')
+        by[k] = (by[k] || 0) + r.amount
+      }
+      const list = go.map(r => `• ${r.supplier || r.from_addr}${r.content ? ' – ' + r.content : ''}: ${money(r.amount, r.currency)}`).join('\n')
+      return `<div class="month-head">
+        <div><h2>${esc(monthName(g.ym))} ${esc(g.ym.slice(0, 4))}</h2>
+          <div class="muted small">${g.rows.length} Rechnung(en)${open.length && status !== 'open' ? `, ${open.length} offen` : ''} · <b>${money(sumOf(g.rows))}</b>${Object.keys(by).length > 1 ? ' · ' + Object.entries(by).map(([k, v]) => `${esc(k)} ${money(v)}`).join(' · ') : ''}</div></div>
+        ${go.length ? `<form method="post" action="/rechnungen/aktion">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}">${go.map(r => `<input type="hidden" name="ids" value="${r.id}">`).join('')}
+          <button class="btn primary" name="aktion" value="buchhaltung" data-confirm="${esc(`${go.length === 1 ? 'Diese geschäftliche Rechnung' : `Diese ${go.length} geschäftlichen Rechnungen`} aus ${monthName(g.ym)} ${g.ym.slice(0, 4)} an Lexware senden${go.length > 1 ? ` (zusammen ${money(sumOf(go))})` : ''}?\n\n${list}`)}">${go.length === 1 ? '1 geschäftliche' : go.length + ' geschäftliche'} ab zu Lexware</button></form>` : ''}
+      </div>`
+    }
+    const body = `
+    <h1>Rechnungen</h1>
+    <p class="muted">Nichts geht von selbst zu Lexware – erst wenn du hier auf „Ab zu Lexware“ klickst. Zum Prüfen markierte (❓) und private Rechnungen werden beim Monats-Knopf nicht mitgeschickt.</p>
+    ${target ? '' : '<div class="alert bad">Noch kein Sammel-Postfach gewählt – <a href="/einstellungen#rechnungen">Einstellungen → Rechnungen</a>.</div>'}
+    ${hasSecret('lexwareKey') ? '' : '<div class="alert bad">Noch kein Lexware-Schlüssel hinterlegt – „Ab zu Lexware“ geht erst danach (<a href="/einstellungen#rechnungen">Einstellungen</a>).</div>'}
+    <form method="get" action="/rechnungen" class="filters">
+      <select name="status">${options(statusOpts, status)}</select>
+      <select name="zuordnung"><option value="">Firma & privat</option>${options([...companies.map(c => [c, c]), ['privat', 'Privat'], ['pruefen', 'Bitte prüfen']], zu)}</select>
+      <select name="jahr"><option value="">Alle Jahre</option>${options(years.map(y => [y, y]), jahr)}</select>
+      <select name="monat"><option value="">Alle Monate</option>${options(Array.from({ length: 12 }, (_, i) => [String(i + 1).padStart(2, '0'), monthName('2000-' + String(i + 1).padStart(2, '0'))]), monat)}</select>
+      <input name="q" value="${esc(q)}" placeholder="Lieferant, Inhalt, Nummer">
+      <button class="btn">Filtern</button>
+    </form>
+    <p class="muted">${rows.length} Rechnungen · Summe ${money(sum)}${status === 'open' ? ' · Offene haben in Outlook ein Fähnchen.' : ''}</p>
+    <form method="post" action="/rechnungen/aktion" id="ibulk">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"></form>
+    ${groups.map(g => `<section class="card month">${monthHead(g)}
+      <div class="table-wrap"><table class="tbl invoices fixed"><colgroup><col class="c-sel"><col class="c-date"><col class="c-from"><col><col class="c-amt"><col class="c-act"></colgroup>
+      <thead><tr><th><input type="checkbox" data-all="isel-${g.ym}" aria-label="Alle wählen"></th><th>Datum</th><th>Von</th><th>Worum geht’s</th><th class="num">Betrag</th><th></th></tr></thead>
+      <tbody>${g.rows.map(rowHtml).join('').replace(/class="isel"/g, `class="isel isel-${g.ym}"`)}</tbody></table></div></section>`).join('') || `<section class="card"><p class="muted">${status === 'open' ? 'Keine offenen Rechnungen. 🎉' : 'Keine Rechnungen.'}</p></section>`}
     ${rows.length ? `<div class="row wrap">
-      <button class="btn primary" form="ibulk" name="aktion" value="buchhaltung" data-confirm="Ausgewählte Rechnungen an Lexware Office senden?">Ausgewählte zur Buchhaltung</button>
+      <button class="btn primary" form="ibulk" name="aktion" value="buchhaltung" data-confirm="Ausgewählte Rechnungen an Lexware Office senden?">Ausgewählte ab zu Lexware</button>
       <button class="btn" form="ibulk" name="aktion" value="privat">Ausgewählte privat</button>
       <button class="btn ghost" form="ibulk" name="aktion" value="keine">Ausgewählte: keine Rechnung</button>
     </div>` : ''}`
@@ -503,6 +558,7 @@ export function createApp () {
       }
       if (req.body.aktion === 'privat') return back(res, to, { msg: `${await markPrivate(ids)} als privat abgelegt.` })
       if (req.body.aktion === 'keine') return back(res, to, { msg: `${await markNoInvoice(ids)} als „keine Rechnung“ abgelegt.` })
+      if (req.body.aktion === 'freigeben') return back(res, to, { msg: `${release(ids)} Beleg(e) freigegeben – jetzt „Zur Buchhaltung“ möglich.` })
       if (req.body.aktion === 'oeffnen') return back(res, to, { msg: `${await reopen(ids)} wieder offen.` })
       back(res, to, { err: 'Unbekannte Aktion.' })
     } catch (e) { back(res, to, { err: errText(e) }) }
@@ -514,6 +570,7 @@ export function createApp () {
     const inv = getInvoice(int(req.params.id, 1, 1e12, 0))
     const p = inv && filePath(inv.file)
     if (!p || !fs.existsSync(p)) return res.status(404).send('Nicht gefunden')
+    if (inv.risk) return res.status(403).send('Dieser Beleg wurde als gefährlich eingestuft – keine Vorschau.')
     const isXml = /\.xml$/i.test(p)
     res.set({ 'Content-Type': isXml ? 'text/plain; charset=utf-8' : 'application/pdf', 'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'", 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(inv.file_name || 'rechnung')}` })
     res.sendFile(p)
@@ -567,6 +624,9 @@ export function createApp () {
         <label>Ordner für Privates<input name="privateName" value="${esc(cfg.invoices.privateName)}" maxlength="60"></label>
         <label>Ordner für „keine Rechnung“<input name="noInvoiceName" value="${esc(cfg.invoices.noInvoiceName)}" maxlength="60"></label>
         <label class="check span"><input type="checkbox" name="flagOpen" value="1"${chk(cfg.invoices.flagOpen)}> Offene Rechnungen in Outlook mit Fähnchen markieren</label>
+        <label>Dein Name auf Rechnungen<input name="ownerName" value="${esc(cfg.invoices.ownerName)}" maxlength="80"></label>
+        <label>Deine Firmen/Marken (je Zeile)<textarea name="companies" rows="3" maxlength="500">${esc(cfg.invoices.companies)}</textarea></label>
+        <p class="muted small span">Steht eine Firma in der Rechnung (z. B. „Michael Zatti – Flexisticker“), gilt sie als geschäftlich und bekommt das Etikett dieser Firma. Steht nur dein Name da, entscheidet die KI nach dem Inhalt – im Zweifel „Bitte prüfen“.</p>
         <label class="check"><input type="checkbox" name="scanEnabled" value="1"${chk(cfg.invoices.scanEnabled)}> Scanner-Ordner abholen</label>
         <label>Scanner-Ordner (im Container)<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="200"></label>
         <p class="muted small span">Der Scanner legt PDFs in die Unraid-Freigabe „scan“ (im Container <code>/scan</code>). Verarbeitete Dateien wandern nach <code>erledigt/JJJJ-MM</code>, doppelte nach <code>erledigt/doppelt</code> – gelöscht wird nichts. Scans werden nur abgeholt, wenn das Sammel-Postfach scharf ist.</p>
@@ -604,14 +664,38 @@ export function createApp () {
       </form></section>
 
     <section class="card" id="ordner"><h2>Ordner</h2>
-      <p class="muted">Die Ordner liegen unter „${esc(cfg.root)}“ in deinem Postfach und erscheinen in Outlook. Beschreibung = was die KI über den Ordner weiß. Wird ein Name geändert, legt der Sortierer einen neuen Ordner an; der alte bleibt (in Outlook umbenennen oder löschen).</p>
+      <p class="muted">Die Ordner liegen unter „${esc(cfg.root)}“ in jedem Postfach und erscheinen in Outlook. Die Beschreibung ist das, was die KI über den Ordner weiß – je genauer, desto besser. Wird ein Name geändert, legt der Sortierer einen neuen Ordner an; der alte bleibt (in Outlook umbenennen oder löschen).</p>
       <form method="post" action="/einstellungen/ordner" class="form">${csrf(s)}
         <label>Hauptordner<input name="root" value="${esc(cfg.root)}" maxlength="60" required></label>
-        ${cfg.categories.map(c => `<fieldset class="cat"><legend>${esc(c.name)}</legend>
+        ${cfg.categories.map(c => `<fieldset class="cat"><legend>${esc(c.name)}${c.custom ? ' <span class="pill">eigener Ordner</span>' : ''}${c.system ? ' <span class="pill warn">Sicherheit</span>' : ''}</legend>
           <label>Name<input name="name_${c.id}" value="${esc(c.name)}" maxlength="60" required></label>
-          <label>Beschreibung für die KI<textarea name="desc_${c.id}" rows="2" maxlength="600">${esc(c.desc)}</textarea></label>
-          <label class="check"><input type="checkbox" name="off_${c.id}" value="1"${chk(c.off)}> nicht verwenden</label></fieldset>`).join('')}
-        <div class="row"><button class="btn primary">Speichern</button><button class="btn ghost" name="reset" value="1" data-confirm="Namen und Beschreibungen auf die Vorgaben zurücksetzen?">Vorgaben</button></div>
+          ${c.system ? `<p class="muted small">${esc(c.desc)} Diesen Ordner füllt nur die Sicherheitsprüfung (Einstellungen → Sicherheit), nie die KI.</p>`
+            : `<label>Beschreibung für die KI – was gehört hier rein?<textarea name="desc_${c.id}" rows="2" maxlength="600">${esc(c.desc)}</textarea></label>
+          <div class="row wrap"><label class="check"><input type="checkbox" name="off_${c.id}" value="1"${chk(c.off)}> nicht verwenden</label>
+          ${c.custom ? `<label class="check"><input type="checkbox" name="del_${c.id}" value="1"> Ordner entfernen</label>` : ''}</div>`}</fieldset>`).join('')}
+        <div class="row"><button class="btn primary">Speichern</button><button class="btn ghost" name="reset" value="1" data-confirm="Namen und Beschreibungen der festen Ordner auf die Vorgaben zurücksetzen? Eigene Ordner bleiben.">Vorgaben</button></div>
+      </form>
+      <h3>Eigenen Ordner anlegen</h3>
+      <form method="post" action="/einstellungen/ordner/neu" class="form two">${csrf(s)}
+        <label>Name<input name="name" maxlength="60" required placeholder="z. B. Ausmisten – Gewinnspiele"></label>
+        <label class="span">Was gehört hier rein? (für die KI)<textarea name="desc" rows="2" maxlength="600" required placeholder="z. B. Gewinnspiele, Verlosungen, „Sie haben gewonnen“-Mails"></textarea></label>
+        <div class="row span"><button class="btn primary">Anlegen</button></div>
+      </form></section>
+
+    <section class="card" id="sicherheit"><h2>Sicherheit</h2>
+      <p class="muted">Jede Mail wird vor allem anderen geprüft: gefährliche Anhänge (Programme, Makros, getarnte Dateien, Archive mit Passwort), PDFs mit Skripten, gefälschte Absender und Links, nachgemachte Domains, Druck plus Passwortabfrage, Absender-Prüfung des Mailservers (SPF/DKIM/DMARC). Anhänge werden dabei nie geöffnet. Verdächtige Mails kommen nach „${esc(targetLabel('verdacht', cfg))}“, Spam nach „${esc(targetLabel('spam', cfg))}“ – gelöscht wird nichts.</p>
+      ${getStatus().dnsWarning ? `<div class="alert bad">Spam-Sperrliste: ${esc(getStatus().dnsWarning)}. Abhilfe: Unraid/Container einen eigenen DNS-Server nutzen lassen (nicht 8.8.8.8/1.1.1.1) oder die Liste entfernen.</div>` : ''}
+      <form method="post" action="/einstellungen/sicherheit" class="form two">${csrf(s)}
+        <label>Ab dieser Punktzahl „Verdacht“<input name="phishThreshold" type="number" value="${cfg.security.phishThreshold}" min="20" max="300"></label>
+        <label>Ab dieser Punktzahl Warnhinweis<input name="warnThreshold" type="number" value="${cfg.security.warnThreshold}" min="5" max="300"></label>
+        <label class="check span"><input type="checkbox" name="blockDangerous" value="1"${chk(cfg.security.blockDangerous)}> Mails mit gefährlichen Anhängen immer nach „Verdacht“ (empfohlen)</label>
+        <label class="check span"><input type="checkbox" name="spamHeader" value="1"${chk(cfg.security.spamHeader)}> Spam-Kennzeichnung des Mailservers übernehmen (z. B. Alfahosting)</label>
+        <label class="check span"><input type="checkbox" name="dnsbl" value="1"${chk(cfg.security.dnsbl)}> Spam-Sperrlisten abfragen – dabei gehen <b>nur IP-Adresse des Absender-Servers und Domains</b> an den Listenbetreiber, nie Inhalte</label>
+        <label>Sperrlisten für Server-IPs (je Zeile)<textarea name="ipLists" rows="2" maxlength="300">${esc(cfg.security.ipLists)}</textarea></label>
+        <label>Sperrlisten für Domains (je Zeile)<textarea name="domainLists" rows="2" maxlength="300">${esc(cfg.security.domainLists)}</textarea></label>
+        <label class="span">Weitere oft gefälschte Absender (je Zeile „Name = domain.de, domain2.de“)<textarea name="brands" rows="2" maxlength="2000" placeholder="Meine Bank = meinebank.de">${esc(cfg.security.brands)}</textarea></label>
+        <p class="muted small span">Spamhaus und SURBL sind für kleine Mengen kostenlos. Fehlalarm? In der Mailliste „ist harmlos“ klicken oder die Mail in Outlook aus dem Ordner ziehen – der Absender gilt dann als vertrauenswürdig.</p>
+        <div class="row span"><button class="btn primary">Speichern</button></div>
       </form></section>
 
     <section class="card" id="konto"><h2>Konto</h2>
@@ -666,7 +750,9 @@ export function createApp () {
       flagOpen: b.flagOpen === '1',
       scanEnabled: b.scanEnabled === '1',
       scanDir: String(b.scanDir || '/scan').trim().slice(0, 200),
-      lexwareUrl: lexUrl || 'https://api.lexware.io'
+      lexwareUrl: lexUrl || 'https://api.lexware.io',
+      ownerName: String(b.ownerName || '').trim().slice(0, 80),
+      companies: String(b.companies || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 20).join('\n')
     } })
     if (b.lexwareKey) setSecret('lexwareKey', String(b.lexwareKey).trim().slice(0, 500))
     if (b.next !== 'test') return back(res, '/einstellungen#rechnungen', { msg: 'Gespeichert.' })
@@ -724,17 +810,50 @@ export function createApp () {
 
   app.post('/einstellungen/ordner', (req, res) => {
     const b = req.body
+    const cfg = getConfig()
     if (b.reset === '1') {
-      saveConfig({ categories: [] })
+      saveConfig({ categories: cfg.categories.filter(c => c.custom) })
       return back(res, '/einstellungen#ordner', { msg: 'Vorgaben wiederhergestellt.' })
     }
-    const cfg = getConfig()
     const root = cleanFolderName(b.root) || 'Sortiert'
-    const cats = cfg.categories.map(c => ({ id: c.id, name: cleanFolderName(b['name_' + c.id]) || c.name, desc: String(b['desc_' + c.id] || c.desc).slice(0, 600), off: b['off_' + c.id] === '1' }))
+    const cats = cfg.categories.filter(c => !(c.custom && b['del_' + c.id] === '1')).map(c => ({
+      id: c.id, name: cleanFolderName(b['name_' + c.id]) || c.name,
+      desc: c.system ? c.desc : String(b['desc_' + c.id] ?? c.desc).slice(0, 600),
+      off: c.system ? false : b['off_' + c.id] === '1'
+    }))
     const names = cats.map(c => c.name.toLowerCase())
     if (new Set(names).size !== names.length) return back(res, '/einstellungen#ordner', { err: 'Zwei Ordner haben denselben Namen.' })
+    const removed = cfg.categories.filter(c => c.custom && b['del_' + c.id] === '1')
+    for (const c of removed) db.prepare("DELETE FROM rules WHERE target = ? AND kind IN ('sender', 'domain')").run(c.id)
     saveConfig({ root, categories: cats })
-    back(res, '/einstellungen#ordner', { msg: 'Gespeichert.' })
+    back(res, '/einstellungen#ordner', { msg: removed.length ? `Gespeichert, ${removed.length} Ordner entfernt (im Postfach bleibt er bestehen).` : 'Gespeichert.' })
+  })
+  app.post('/einstellungen/ordner/neu', (req, res) => {
+    const cfg = getConfig()
+    const name = cleanFolderName(req.body.name)
+    const desc = String(req.body.desc || '').trim().slice(0, 600)
+    if (!name || !desc) return back(res, '/einstellungen#ordner', { err: 'Name und Beschreibung angeben.' })
+    if (cfg.categories.some(c => c.name.toLowerCase() === name.toLowerCase())) return back(res, '/einstellungen#ordner', { err: 'Diesen Ordner gibt es schon.' })
+    if (cfg.categories.filter(c => c.custom).length >= 40) return back(res, '/einstellungen#ordner', { err: 'Höchstens 40 eigene Ordner.' })
+    const id = 'c_' + crypto.randomBytes(5).toString('hex')
+    saveConfig({ categories: [...cfg.categories.map(c => ({ id: c.id, name: c.name, desc: c.desc, off: c.off })), { id, name, desc, off: false }] })
+    log('info', `Eigener Ordner „${name}“ angelegt`)
+    back(res, '/einstellungen#ordner', { msg: `Ordner „${name}“ angelegt – er erscheint beim nächsten Durchlauf in den scharf geschalteten Postfächern.` })
+  })
+  app.post('/einstellungen/sicherheit', (req, res) => {
+    const b = req.body
+    const lists = (v) => String(v || '').split(/\s+/).map(x => x.trim().toLowerCase()).filter(x => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(x)).slice(0, 5).join('\n')
+    saveConfig({ security: {
+      phishThreshold: int(b.phishThreshold, 20, 300, 60),
+      warnThreshold: int(b.warnThreshold, 5, 300, 30),
+      blockDangerous: b.blockDangerous === '1',
+      spamHeader: b.spamHeader === '1',
+      dnsbl: b.dnsbl === '1',
+      ipLists: lists(b.ipLists),
+      domainLists: lists(b.domainLists),
+      brands: String(b.brands || '').slice(0, 2000)
+    } })
+    back(res, '/einstellungen#sicherheit', { msg: 'Gespeichert.' })
   })
 
   app.post('/einstellungen/passwort', async (req, res) => {

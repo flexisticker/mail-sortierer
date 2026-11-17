@@ -64,3 +64,23 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Getestet: GreenMail mit 2 Postfächern, PDF/ZUGFeRD (pdf-lib attach)/XRechnung-XML/CC-Doppel/Scan, Lexware-Nachbau, Umzug einer 1.0-Datenbank, 1280/390 px.
   **Nicht getestet:** echtes Lexware (`/v1/files` mit XML-Datei?), echte Scanner-PDFs ohne Textebene (dann Angaben von Hand), echte ZUGFeRD-PDFs
   mit Objektströmen (Einbettung evtl. nicht gefunden → KI liest PDF-Text).
+- **1.1.1:** Liste springt nach Korrektur nicht mehr nach oben (Anker = Zeile davor, `anker`-Feld, `withAnchor`).
+- **1.2.0 (17.11.2026):** Wünsche Michael: eigene Ordner, Firma/privat bei Rechnungen, Schutz vor bösen Mails, Phishing-Erkennung, Spam-Sperrlisten,
+  Rechnungen nach Monat mit „Worum geht’s“ und „Ab zu Lexware“ (nie automatisch). Flexisticker + 3dbymicha laufen über **eine** Lexware-Buchhaltung.
+  - Kategorien: feste + eigene (`c_<hex>`, Einstellungen → Ordner) + System `spam`, `verdacht` (nie von der KI gewählt, `kiCategories`).
+  - `src/security.js`: `scanAttachment` (Endungen, Magic Bytes MZ/%PDF/OLE, ZIP-Verzeichnis lesen ohne Entpacken, verschlüsselte ZIPs, Makros),
+    `pdfRisk` (/JavaScript, /Launch, /SubmitForm, /RichMedia, /XFA, eingebettete Dateien außer factur-x/zugferd/xrechnung; auch in Objektströmen),
+    `phishCheck` (Punkte: DMARC 40, Lookalike 40, Marken-Anzeigename 35, Link-Text≠Ziel 30, IP-Link 30, Druck+Zugangsdaten 25, SPF 20 …;
+    bekannte Absender −30, vertraute = 0 außer gefährliche Anhänge), `lookalike` (Levenshtein, Verwechsler 0/1/I/rn, Marke + Lockwort in Domain-Tokens),
+    `blocklistCheck` (DNSBL parallel, 4 s, Fehlercodes 127.255.255.x = Abfrage gesperrt → Warnung). Marken-Liste `BRANDS` + Einstellung `security.brands`.
+  - `worker.js assess()`: Prüfung vor Regeln/KI → `verdacht` (gefährlich oder ≥ `phishThreshold` 60) bzw. `spam`; KI-Feld `verdacht` ≥ 80 gibt +25.
+    Spalten `mails.risk/risk_reasons`. Vertrauen: Regel-Art `trust` (`trustSender`), entsteht bei „ist harmlos“ oder Korrektur aus verdacht/spam heraus.
+    `readMessages` liefert `_headers/_html/_text/_attachments` (nur im Speicher), Archive/Office bis 15 MB werden komplett geladen (nur Bytes).
+  - Rechnungen: `detectCompany` (Firmen aus `invoices.companies`, Mail-/Web-Adressen werden vorher entfernt – sonst wäre rechnung@flexisticker.de immer „Flexisticker“),
+    KI-Feld `zuordnung` firma|privat|unklar + `inhalt` → `suggestion` business|private|check, Spalten `brand`, `content`, `risk`, Status `blocked`
+    (gefährlicher Beleg: Mail → verdacht, keine Ablage, „Trotzdem freigeben“ nur für Lexware, Vorschau bleibt 403). PDF-Text mit `isEvalSupported: false` + 20 s Zeitlimit.
+    Seite Rechnungen: Gruppen je Monat (Summe, Aufteilung Firma/privat/zu prüfen), Monats-Knopf schickt nur geschäftliche mit Beleg (nicht ❓/privat), Rückfrage mit Liste.
+  - Getestet (GreenMail + Mocks): PayPal-Phishing (220 P.), `.pdf.exe`, PDF mit JS (pdf-lib addJavaScript), ZIP mit `.js`, X-Spam-Flag, eigener Ordner,
+    3dbymicha-Rechnung, „nur Michael Zatti“ → Prüfen, „ist harmlos“ → vertraut, echte DHL-Mail 0 Punkte, 1280/390 px.
+    **Nicht getestet:** echte DNSBL-Abfragen (Sandbox ohne DNS; Spamhaus blockt öffentliche Resolver), echte Alfahosting-Header (Authentication-Results/X-Spam-*),
+    echte Phishing-Mails, Ollama-Qualität bei „zuordnung“.

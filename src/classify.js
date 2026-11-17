@@ -1,5 +1,5 @@
 // Einordnen einer Mail: eigene Adresse → Regel → bekannter Kunde → lokale KI.
-import { activeCategories, categoryById, ownAddresses, targetLabel } from './config.js'
+import { kiCategories, categoryById, ownAddresses, targetLabel } from './config.js'
 import { ruleFor, examplesFor, contactFor } from './learn.js'
 import { chatJson } from './ollama.js'
 
@@ -9,14 +9,15 @@ function schema (ids) {
     properties: {
       kategorie: { type: 'string', enum: [...ids, 'posteingang'] },
       sicherheit: { type: 'integer', minimum: 0, maximum: 100 },
-      grund: { type: 'string' }
+      grund: { type: 'string' },
+      verdacht: { type: 'integer', minimum: 0, maximum: 100 }
     },
-    required: ['kategorie', 'sicherheit', 'grund']
+    required: ['kategorie', 'sicherheit', 'grund', 'verdacht']
   }
 }
 
 function systemPrompt (cfg) {
-  const cats = activeCategories(cfg)
+  const cats = kiCategories(cfg)
   return [
     'Du sortierst E-Mails eines kleinen Textil- und Tassendruck-Betriebs (Flexisticker, Inhaber Michael) in Ordner.',
     'Wähle genau eine Kategorie:',
@@ -30,6 +31,7 @@ function systemPrompt (cfg) {
     '- „ausmisten“ nur für eindeutig wertlose Mails.',
     '- Beachte die Beispiele, wie Michael ähnliche Mails selbst einsortiert hat – sie haben Vorrang.',
     '- sicherheit: 0–100, wie sicher du dir bist. grund: kurz auf Deutsch (höchstens 15 Wörter).',
+    '- verdacht: 0–100, wie wahrscheinlich die Mail Phishing oder Betrug ist (gefälschter Absender, will Passwörter, TANs oder Zahlungen, droht mit Sperrung, gefälschte Rechnung). Normale Mails: 0–10.',
     'Antworte nur mit JSON.'
   ].join('\n')
 }
@@ -61,12 +63,12 @@ export async function classify (mail, cfg) {
   }
   if (contact) extra.push(`Bekannter Kontakt: ${targetLabel(contact.target, cfg)}${contact.name ? ' – ' + contact.name : ''}`)
 
-  const ids = activeCategories(cfg).map(c => c.id)
+  const ids = kiCategories(cfg).map(c => c.id)
   const ex = examplesFor(mail, cfg.maxExamples)
   const messages = [{ role: 'system', content: systemPrompt(cfg) }]
   for (const e of ex) {
     messages.push({ role: 'user', content: describe(e) })
-    messages.push({ role: 'assistant', content: JSON.stringify({ kategorie: e.target === 'inbox' ? 'posteingang' : e.target, sicherheit: 100, grund: 'So hat Michael es selbst einsortiert.' }) })
+    messages.push({ role: 'assistant', content: JSON.stringify({ kategorie: e.target === 'inbox' ? 'posteingang' : e.target, sicherheit: 100, grund: 'So hat Michael es selbst einsortiert.', verdacht: 0 }) })
   }
   messages.push({ role: 'user', content: describe(mail, extra) })
 
@@ -76,9 +78,10 @@ export async function classify (mail, cfg) {
   if (cat !== 'inbox' && !ids.includes(cat)) cat = 'inbox'
   const conf = Math.max(0, Math.min(100, Math.round(Number(r.sicherheit) || 0)))
   const reason = String(r.grund || '').replace(/\s+/g, ' ').slice(0, 200)
+  const suspicion = Math.max(0, Math.min(100, Math.round(Number(r.verdacht) || 0)))
   const need = cat === 'ausmisten' ? Number(cfg.minConfidenceTrash) || 85 : Number(cfg.minConfidence) || 70
   if (cat !== 'inbox' && conf < need) {
-    return { decision: 'inbox', source: 'ki', confidence: conf, reason: `unsicher – Vorschlag „${targetLabel(cat, cfg)}“: ${reason}`, suggestion: cat }
+    return { decision: 'inbox', source: 'ki', confidence: conf, reason: `unsicher – Vorschlag „${targetLabel(cat, cfg)}“: ${reason}`, suggestion: cat, suspicion }
   }
-  return { decision: cat, source: 'ki', confidence: conf, reason, examples: ex.length }
+  return { decision: cat, source: 'ki', confidence: conf, reason, examples: ex.length, suspicion }
 }

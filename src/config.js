@@ -10,7 +10,10 @@ export const DEFAULT_CATEGORIES = [
   { id: 'versand', name: 'Versand und Shop', desc: 'Sendungsverfolgung und Paketdienste (DHL, DPD, UPS, Sendcloud), Bestellbenachrichtigungen aus Shops und Marktplätzen (eBay, WooCommerce, Amazon) über Verkäufe.' },
   { id: 'system', name: 'System-Meldungen', desc: 'Automatische Meldungen von Software und Servern: Unraid, GitHub, Updates, Sicherungen, Anmelde- und Sicherheitshinweise, Konto-Bestätigungen, Passwort-Mails.' },
   { id: 'newsletter', name: 'Newsletter und Werbung', desc: 'Newsletter, Werbung, Angebote und Rabattaktionen, Umfragen, Social-Media-Benachrichtigungen, Webinar-Einladungen.' },
-  { id: 'ausmisten', name: 'Ausmisten', desc: 'Offensichtlich unwichtige oder unerwünschte Mails: Spam, unseriöse Werbung, Kaltakquise, Gewinnspiele, Mails, die niemand braucht.' }
+  { id: 'ausmisten', name: 'Ausmisten', desc: 'Offensichtlich unwichtige oder unerwünschte Mails: Spam, unseriöse Werbung, Kaltakquise, Gewinnspiele, Mails, die niemand braucht.' },
+  // Sonderordner – die KI wählt sie nie selbst, nur die Sicherheitsprüfung (security.js)
+  { id: 'spam', name: 'Spam', desc: 'Mails von Absendern auf Spam-Sperrlisten oder vom Mailserver als Spam markiert.', system: true },
+  { id: 'verdacht', name: 'Achtung Verdacht', desc: 'Verdacht auf Phishing, Betrug oder gefährliche Anhänge. Nichts anklicken, nichts öffnen.', system: true }
 ]
 
 export const DEFAULT_CONFIG = {
@@ -23,7 +26,19 @@ export const DEFAULT_CONFIG = {
     flagOpen: true,          // offene Rechnungen in Outlook mit Fähnchen
     scanEnabled: false,
     scanDir: '/scan',        // Scanner-Ordner im Container (Unraid: Freigabe → /scan)
-    lexwareUrl: 'https://api.lexware.io'
+    lexwareUrl: 'https://api.lexware.io',
+    ownerName: 'Michael Zatti',            // so steht Michael in Rechnungsanschriften
+    companies: 'Flexisticker\n3dbymicha'  // je Zeile eine Firma/Marke – steht sie in der Rechnung, ist sie geschäftlich
+  },
+  security: {
+    phishThreshold: 60,      // ab dieser Punktzahl → Ordner „Achtung Verdacht“
+    warnThreshold: 30,       // ab hier Warnhinweis in der Oberfläche
+    blockDangerous: true,    // gefährliche Anhänge immer als Verdacht behandeln
+    brands: '',              // zusätzliche Marken (je Zeile „Name = domain.de, domain2.de“), die oft gefälscht werden
+    dnsbl: true,             // Spam-Sperrlisten abfragen (nur IP/Domain gehen an den Listenbetreiber, kein Inhalt)
+    ipLists: 'zen.spamhaus.org\nbl.spamcop.net',
+    domainLists: 'dbl.spamhaus.org\nmulti.surbl.org',
+    spamHeader: true         // Spam-Kennzeichnung des Mailservers (X-Spam-Flag) übernehmen
   },
   ollama: { url: 'http://192.168.1.10:11434', model: 'qwen2.5:7b', timeoutSec: 120, numCtx: 4096 },
   root: 'Sortiert',
@@ -53,12 +68,15 @@ function merge (base, over) {
 
 export function getConfig () {
   const c = merge(DEFAULT_CONFIG, kvGet('config', {}))
-  // Kategorien: gespeicherte Namen übernehmen, feste IDs behalten
+  // Kategorien: feste (IDs bleiben, Name/Beschreibung änderbar) + eigene Ordner (id c_…)
   const saved = Array.isArray(c.categories) ? c.categories : []
-  c.categories = DEFAULT_CATEGORIES.map(d => {
+  const fixed = DEFAULT_CATEGORIES.map(d => {
     const s = saved.find(x => x.id === d.id) || {}
-    return { id: d.id, name: cleanFolderName(s.name) || d.name, desc: String(s.desc || d.desc).slice(0, 600), off: !!s.off }
+    return { id: d.id, name: cleanFolderName(s.name) || d.name, desc: String(s.desc || d.desc).slice(0, 600), off: d.system ? false : !!s.off, system: !!d.system }
   })
+  const custom = saved.filter(x => x && /^c_[a-z0-9]{4,16}$/.test(x.id) && cleanFolderName(x.name))
+    .map(x => ({ id: x.id, name: cleanFolderName(x.name), desc: String(x.desc || '').slice(0, 600), off: !!x.off, custom: true }))
+  c.categories = [...fixed.filter(x => !x.system), ...custom, ...fixed.filter(x => x.system)]
   return c
 }
 
@@ -74,6 +92,9 @@ export function cleanFolderName (s) {
 }
 
 export const activeCategories = (c = getConfig()) => c.categories.filter(x => !x.off)
+// Ordner, zwischen denen die KI wählt (ohne „Achtung Verdacht“)
+export const kiCategories = (c = getConfig()) => activeCategories(c).filter(x => !x.system)
+export const companyList = (c = getConfig()) => String(c.invoices.companies || '').split(/\n|,/).map(x => x.trim()).filter(Boolean).slice(0, 20)
 export const categoryById = (id, c = getConfig()) => c.categories.find(x => x.id === id)
 export function targetLabel (id, c = getConfig()) {
   if (id === 'inbox') return 'Posteingang'
