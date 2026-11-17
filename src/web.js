@@ -84,7 +84,15 @@ export function createApp () {
       if (origin && origin !== 'null') {
         try { if (new URL(origin).host !== req.headers.host) return res.status(403).send('Fremde Herkunft abgelehnt') } catch { return res.status(403).send('Ungültige Herkunft') }
       }
-      if (req.session && req.body.csrf !== req.session.csrf) return res.status(403).send('Sicherheitsprüfung fehlgeschlagen – Seite neu laden.')
+      // Anmelden/Einrichten brauchen kein Sitzungs-Feld (Herkunft wird oben geprüft) – sonst scheitert das Anmelden,
+      // wenn noch eine gültige Sitzung besteht (wiederhergestellter Tab, zweites Fenster)
+      if (req.path === '/anmelden' || req.path === '/einrichten') return next()
+      if (req.session && req.body.csrf !== req.session.csrf) {
+        // veraltete Seite: nichts ausführen, zurück zur Seite mit Hinweis statt einer Sackgasse
+        let to = '/'
+        try { const ref = new URL(req.headers.referer || ''); if (ref.host === req.headers.host) to = ref.pathname + ref.hash } catch { /* Startseite */ }
+        return back(res, to, { err: 'Die Seite war veraltet – bitte noch einmal versuchen.' })
+      }
     }
     next()
   })

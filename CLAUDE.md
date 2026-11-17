@@ -111,3 +111,6 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
     Setup-Seite „Scanner-Ordner“ (Aufgabe `scan`, Standard `C:\Scans`) → Umgebung `SCAN_DIR` (Vorgabe für `invoices.scanDir` + scanEnabled), Netzwerkfreigaben
     mit Benutzer/Passwort (`scanUser`, Geheimnis `scanPassword`, `net use` in `ensureShare`), Knopf „Speichern & Ordner prüfen“ (`checkScanDir`).
     Action-Jobs `windows` + `windows-publish` → `ghcr.io/flexisticker/mail-sortierer:windows` (main) bzw. `windows-<zweig>`.
+- **1.5.1:** „Sicherheitsprüfung fehlgeschlagen“ beim Anmelden: Login-Formular wurde abgeschickt, während noch eine gültige Sitzung bestand
+  (wiederhergestellter Tab, seit „Angemeldet bleiben“ häufig) → CSRF-Feld fehlte. `/anmelden` und `/einrichten` sind jetzt von der Sitzungs-CSRF-Prüfung
+  ausgenommen (Origin-Prüfung bleibt); andere veraltete Formulare leiten mit Hinweis zur Seite zurück statt 403-Text.
