@@ -98,3 +98,16 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
 - **1.4.1:** Michael musste sich ständig neu anmelden – Ursache Cookie `SameSite=Strict` (kommt beim Aufruf über einen Link, z. B. Unraid „WebUI“, nicht mit).
   Jetzt `SameSite=Lax` (CSRF-Feld + Origin-Prüfung schützen weiter), Haken „Angemeldet bleiben (30 Tage)“ (Standard an; Spalte `sessions.remember`,
   ohne Haken 12 Std. gleitend + Sitzungs-Cookie), Cookie wird bei Nutzung erneuert (`renewed`).
+- **1.5.0 (17.11.2026):** Mail-Sortierer wird **mit Vedly angeboten** (Michael: „mit in die Lizenzverwaltung“, „nichts vorausgefüllt“).
+  - **Neutrale Vorgaben:** Ollama leer (Windows `http://localhost:11434`), Inhaber/Firmen/Betrieb leer, KI-Texte ohne Flexisticker (`bizText`, `business.name/description`),
+    Abschnitt „Dein Betrieb“ in den Einstellungen (Name, Beschreibung, Inhaber, Firmen/Marken). Eigeninstallation: `index.js` setzt einmalig (kv `neutralDefaultsMigrated`)
+    Michaels bisherige Werte, falls nie gespeichert.
+  - **Lizenz** `src/license.js` (Port von Vedly `server/license.js`, nur online): `installId`, Bestand vor 1.5.0 = `licenseExempt` (Michael), sonst 30 Tage Test;
+    Aktivierung mit Vedly-Schlüssel bei der Zentrale (`product: 'mailsort'`), Erneuerung 7 Tage, Lease; ohne Lizenz `licensedFull()` = false → alle Postfächer
+    nur Probelauf, keine Scans, kein Lexware. Öffentlicher Schlüssel `src/license-keys.js` (gleich Vedly). Zentrale-Adresse kv `licenseServer` (Test), Standard lizenz.vedly.de.
+    Gegenstück: **Vedly-Zentrale 1.8.0** (Repo flex-studio, Modul `mailsort`, Aktivierungen je Produkt, Download-Knopf).
+  - **Windows:** `windows/build.ps1`, `windows/Mail-Sortierer.iss` (UTF-8 mit BOM!), `windows/test.ps1`, `notfall-zugang.cmd` → `src/reset-admin.js`.
+    Dienst-ID `Mail-Sortierer` (WinSW), Programm `C:\Program Files\Mail-Sortierer`, Daten `C:\ProgramData\Mail-Sortierer` (nur SYSTEM + Admins), Port 8110,
+    Setup-Seite „Scanner-Ordner“ (Aufgabe `scan`, Standard `C:\Scans`) → Umgebung `SCAN_DIR` (Vorgabe für `invoices.scanDir` + scanEnabled), Netzwerkfreigaben
+    mit Benutzer/Passwort (`scanUser`, Geheimnis `scanPassword`, `net use` in `ensureShare`), Knopf „Speichern & Ordner prüfen“ (`checkScanDir`).
+    Action-Jobs `windows` + `windows-publish` → `ghcr.io/flexisticker/mail-sortierer:windows` (main) bzw. `windows-<zweig>`.

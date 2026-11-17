@@ -3,6 +3,7 @@ import express from 'express'
 import path from 'node:path'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { db, now, log } from './db.js'
 import { hasUsers, createUser, login, logout, sessionFor, verifyPassword, changePassword } from './auth.js'
@@ -816,7 +817,7 @@ export function createApp () {
     back(res, '/einstellungen#betrieb', { msg: 'Gespeichert.' })
   })
   app.post('/lizenz/aktivieren', async (req, res) => {
-    try { await activate(req.body.key, getConfig().business.name); back(res, '/einstellungen#lizenz', { msg: 'Lizenz aktiviert – vielen Dank!' }) } catch (e) { back(res, '/einstellungen#lizenz', { err: errText(e) }) }
+    try { await activate(req.body.key, getConfig().business.name || ('Mail-Sortierer ' + os.hostname())); back(res, '/einstellungen#lizenz', { msg: 'Lizenz aktiviert – vielen Dank!' }) } catch (e) { back(res, '/einstellungen#lizenz', { err: errText(e) }) }
   })
   app.post('/lizenz/pruefen', async (req, res) => {
     const st = await checkin({ force: true })

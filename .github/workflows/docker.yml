@@ -76,3 +76,53 @@ jobs:
             APP_VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Windows-Setup (Inno Setup + WinSW-Dienst), gebaut und still getestet auf windows-latest
+  windows:
+    needs: [secrets, security]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          check-latest: true
+      - name: Setup bauen
+        shell: pwsh
+        run: ./windows/build.ps1 -Build "${{ github.run_number }}" -Commit "${{ github.sha }}"
+      - name: Setup testen
+        shell: pwsh
+        run: ./windows/test.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: dist-windows/*.exe
+          retention-days: 14
+
+  # Setup als OCI-Artefakt ins (öffentliche) Paket mail-sortierer, Tag „windows“ – die Vedly-Zentrale gibt es von dort an Firmen mit Lizenz weiter
+  windows-publish:
+    needs: windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-setup
+          path: dist-windows
+      - uses: oras-project/setup-oras@v1
+      - name: Nach ghcr.io hochladen
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          version=$(node -p "require('./package.json').version")
+          repo="ghcr.io/${{ github.repository_owner }}/mail-sortierer"
+          if [ "${{ github.ref_name }}" = "main" ]; then tag="windows"; else tag="windows-$(echo '${{ github.ref_name }}' | tr '/' '-')"; fi
+          cd dist-windows
+          file=$(ls Mail-Sortierer-Setup-*.exe | head -n1)
+          oras push "$repo:$tag" \
+            --artifact-type application/vnd.mail-sortierer.windows-setup \
+            --annotation "org.opencontainers.image.version=$version" \
+            --annotation "org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            "$file:application/vnd.microsoft.portable-executable"

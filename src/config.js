@@ -28,8 +28,8 @@ export const DEFAULT_CONFIG = {
     noInvoiceName: 'Keine Rechnung',
     flagOpen: true,          // offene Rechnungen in Outlook mit Fähnchen
     fromYear: 0,             // Rechnungen erst ab diesem Jahr zu Lexware prüfen (0 = alle); ältere = „Jahr abgeschlossen“
-    scanEnabled: false,
-    scanDir: PLATFORM === 'windows' ? '' : '/scan', // Docker: Freigabe → /scan, Windows: Ordner wählen (z. B. C:\\Scans)
+    scanEnabled: !!process.env.SCAN_DIR, // Windows-Setup: im Setup gewählter Scan-Ordner ist gleich eingeschaltet
+    scanDir: process.env.SCAN_DIR || (PLATFORM === 'windows' ? '' : '/scan'), // Docker: Freigabe → /scan, Windows: Ordner wählen (z. B. C:\\Scans)
     scanUser: '',            // Windows: Benutzer für eine Netzwerkfreigabe (\\\\NAS\\scan), Passwort verschlüsselt
     lexwareUrl: 'https://api.lexware.io',
     ownerName: '',           // Name des Inhabers, wie er in Rechnungsanschriften steht

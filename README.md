@@ -43,6 +43,12 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nie etwas gelöscht** – nur ver
 - Rechnungen: Firma/privat aus der Anschrift („Michael Zatti – Flexisticker“, „… – 3dbymicha“), sonst KI nach Inhalt,
   im Zweifel **„Bitte prüfen“**. Ansicht nach Monat mit Lieferant, „Worum geht’s“, Betrag; **„Ab zu Lexware“** nur auf Klick.
 
+## Windows (ab 1.5)
+
+`Mail-Sortierer-Setup-<Version>.exe` (Download über die Vedly-Zentrale bzw. Action-Artefakt): läuft als Windows-Dienst,
+Browser `http://localhost:8110`, Scanner-Ordner im Setup wählbar, Daten unter `C:\ProgramData\Mail-Sortierer`.
+Für die KI „Ollama für Windows“ installieren. Lizenz: Vedly-Lizenzschlüssel mit Modul „Mail-Sortierer“ (30 Tage Test).
+
 ## Einrichten auf Unraid
 
 1. **Ollama** läuft schon. Modell laden (Konsole des Ollama-Containers):
