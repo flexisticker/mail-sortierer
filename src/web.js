@@ -31,6 +31,8 @@ function back (res, to, { msg, err } = {}) {
 }
 
 const int = (v, min, max, def) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def }
+// Nach einer Aktion zur Zeile davor springen – so bleibt man an derselben Stelle der Liste
+const anchor = (rows, i, p) => i > 0 ? `<input type="hidden" name="anker" value="${p}${rows[i - 1].id}">` : ''
 const errText = (e) => String((e && (e.responseText || e.message)) || e).slice(0, 300)
 
 export function createApp () {
@@ -261,7 +263,7 @@ export function createApp () {
     <div class="table-wrap"><table class="tbl mails">
       <thead><tr><th><input type="checkbox" data-all="sel" aria-label="Alle wählen"></th><th>Datum</th><th>Absender / Betreff</th><th>Einordnung</th><th>Richtig wäre</th></tr></thead>
       <tbody>
-      ${rows.map(r => `<tr class="st-${esc(r.status)}">
+      ${rows.map((r, i) => `<tr class="st-${esc(r.status)}" id="m${r.id}">
         <td><input type="checkbox" name="ids" value="${r.id}" form="bulk" class="sel"></td>
         <td class="nowrap">${fmtDate(r.date || r.created_at)}${accounts.length > 1 ? `<div class="muted small">${esc(accName[r.account_id] || '')}</div>` : ''}</td>
         <td><div class="from">${esc(r.from_name || r.from_addr)} <span class="muted">&lt;${esc(r.from_addr)}&gt;</span></div>
@@ -271,9 +273,9 @@ export function createApp () {
           <span class="pill st">${esc(STATUS_LABEL[r.status] || r.status)}</span>
           <div class="muted small">${esc(SOURCE_LABEL[r.source] || r.source || '')}${r.confidence != null && r.source === 'ki' ? ` · ${r.confidence} %` : ''}${r.reason ? ' · ' + esc(r.reason) : ''}</div>
           ${r.error ? `<div class="bad small">${esc(r.error)}</div>` : ''}</td>
-        <td class="nowrap">${r.status === 'gone' ? '' : `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}">
+        <td class="nowrap">${r.status === 'gone' ? '' : `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}">
             <select name="target" aria-label="Richtiger Ordner">${options(targets, r.decision)}</select><button class="btn sm">Ändern</button></form>
-          ${['planned', 'moved', 'kept'].includes(r.status) && r.source !== 'correction' ? `<form method="post" action="/mails/${r.id}/passt" class="inline">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"><button class="btn sm ghost" title="Richtig – zählt für eine feste Regel">passt</button></form>` : ''}`}</td>
+          ${['planned', 'moved', 'kept'].includes(r.status) && r.source !== 'correction' ? `<form method="post" action="/mails/${r.id}/passt" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><button class="btn sm ghost" title="Richtig – zählt für eine feste Regel">passt</button></form>` : ''}`}</td>
       </tr>`).join('') || '<tr><td colspan="5" class="muted">Keine Mails.</td></tr>'}
       </tbody></table></div>
     <div class="row between">
@@ -283,21 +285,22 @@ export function createApp () {
     res.send(page({ title: 'Mails', body, session: s, path: '/mails', wide: true, ...flash(req) }))
   })
 
-  const safeBack = (v) => (typeof v === 'string' && v.startsWith('/') && !v.startsWith('//')) ? v.replace(/[?&](ok|fehler)=[^&]*/g, '') : '/mails'
+  const withAnchor = (url, a) => /^[mr]\d{1,12}$/.test(String(a || '')) ? url.replace(/#.*$/, '') + '#' + a : url
+  const safeBack = (v, a) => withAnchor((typeof v === 'string' && v.startsWith('/') && !v.startsWith('//')) ? v.replace(/[?&](ok|fehler)=[^&]*/g, '') : '/mails', a)
 
   app.post('/mails/:id/korrektur', async (req, res) => {
     try {
       await correct(int(req.params.id, 1, 1e12, 0), String(req.body.target || ''))
-      back(res, safeBack(req.body.zurueck), { msg: `Geändert auf „${targetLabel(String(req.body.target))}“ – gemerkt.` })
-    } catch (e) { back(res, safeBack(req.body.zurueck), { err: errText(e) }) }
+      back(res, safeBack(req.body.zurueck, req.body.anker), { msg: `Geändert auf „${targetLabel(String(req.body.target))}“ – gemerkt.` })
+    } catch (e) { back(res, safeBack(req.body.zurueck, req.body.anker), { err: errText(e) }) }
   })
   app.post('/mails/:id/passt', (req, res) => {
-    try { confirm(int(req.params.id, 1, 1e12, 0)); back(res, safeBack(req.body.zurueck), { msg: 'Bestätigt – gemerkt.' }) } catch (e) { back(res, safeBack(req.body.zurueck), { err: errText(e) }) }
+    try { confirm(int(req.params.id, 1, 1e12, 0)); back(res, safeBack(req.body.zurueck, req.body.anker), { msg: 'Bestätigt – gemerkt.' }) } catch (e) { back(res, safeBack(req.body.zurueck, req.body.anker), { err: errText(e) }) }
   })
   app.post('/mails/rueckgaengig', async (req, res) => {
     const ids = [].concat(req.body.ids || []).map(x => int(x, 1, 1e12, 0)).filter(Boolean).slice(0, 500)
-    if (!ids.length) return back(res, safeBack(req.body.zurueck), { err: 'Keine Mails ausgewählt.' })
-    try { const n = await undo(ids); back(res, safeBack(req.body.zurueck), { msg: `${n} rückgängig gemacht.` }) } catch (e) { back(res, safeBack(req.body.zurueck), { err: errText(e) }) }
+    if (!ids.length) return back(res, safeBack(req.body.zurueck, req.body.anker), { err: 'Keine Mails ausgewählt.' })
+    try { const n = await undo(ids); back(res, safeBack(req.body.zurueck, req.body.anker), { msg: `${n} rückgängig gemacht.` }) } catch (e) { back(res, safeBack(req.body.zurueck, req.body.anker), { err: errText(e) }) }
   })
 
   // --- Gelernt ---
@@ -455,7 +458,7 @@ export function createApp () {
     <div class="table-wrap"><table class="tbl invoices">
       <thead><tr><th><input type="checkbox" data-all="isel" aria-label="Alle wählen"></th><th>Datum</th><th>Lieferant / Nummer</th><th class="num">Betrag</th><th>Herkunft</th><th>Aktion</th></tr></thead>
       <tbody>
-      ${rows.map(r => `<tr class="ist-${esc(r.status)}">
+      ${rows.map((r, i) => `<tr class="ist-${esc(r.status)}" id="r${r.id}">
         <td><input type="checkbox" name="ids" value="${r.id}" form="ibulk" class="isel"></td>
         <td class="nowrap">${ymd(r.inv_date) || '<span class="muted">ohne Datum</span>'}</td>
         <td><div class="from">${esc(r.supplier || r.from_addr || '?')}</div><div class="small">${r.number ? 'Nr. ' + esc(r.number) : '<span class="muted">ohne Nummer</span>'}
@@ -463,7 +466,7 @@ export function createApp () {
           ${r.file ? ` · <a href="/rechnungen/${r.id}/datei" target="_blank" rel="noopener">${/\.xml$/i.test(r.file) ? 'XML' : 'PDF'} ansehen</a>` : ' · <span class="bad">kein Beleg angehängt</span>'}</div>
           ${r.status === 'open' || r.status === 'error' ? `<div class="small ${r.suggestion === 'private' ? 'warn-text' : 'muted'}">Vorschlag: ${r.suggestion === 'private' ? 'Privat' : 'Geschäftlich'}${r.hint ? ' · ' + esc(r.hint) : ''}</div>` : `<div class="small muted">${esc(INV_STATUS[r.status] || r.status)}${r.decided_at ? ' · ' + fmtDate(r.decided_at) : ''}${r.hint && r.status === 'duplicate' ? ' · ' + esc(r.hint) : ''}</div>`}
           ${r.error ? `<div class="bad small">${esc(r.error)}</div>` : ''}
-          <details><summary>Angaben ändern</summary><form method="post" action="/rechnungen/${r.id}/aendern" class="form two mini">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}">
+          <details><summary>Angaben ändern</summary><form method="post" action="/rechnungen/${r.id}/aendern" class="form two mini">${csrf(s)}<input type="hidden" name="anker" value="r${r.id}"><input type="hidden" name="zurueck" value="${esc(here)}">
             <label>Lieferant<input name="supplier" value="${esc(r.supplier)}" maxlength="120"></label>
             <label>Nummer<input name="number" value="${esc(r.number)}" maxlength="80"></label>
             <label>Rechnungsdatum<input name="inv_date" type="date" value="${esc(r.inv_date)}"></label>
@@ -471,11 +474,11 @@ export function createApp () {
             <div class="row span"><button class="btn sm">Speichern</button></div></form></details></td>
         <td class="num nowrap">${money(r.amount, r.currency)}</td>
         <td class="small">${r.source === 'scan' ? 'Scan' : esc(accName[r.account_id] || 'Mail')}<div class="muted">${esc(r.source === 'scan' ? r.subject : r.from_addr)}</div></td>
-        <td class="nowrap">${(r.status === 'open' || r.status === 'error') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
+        <td class="nowrap">${(r.status === 'open' || r.status === 'error') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
             <button class="btn sm primary" name="aktion" value="buchhaltung"${r.file ? '' : ' disabled'}>Zur Buchhaltung</button>
             <button class="btn sm" name="aktion" value="privat">Privat</button>
             <button class="btn sm ghost" name="aktion" value="keine">Keine Rechnung</button></form>`
-          : (r.status === 'private' || r.status === 'noinvoice') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
+          : (r.status === 'private' || r.status === 'noinvoice') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
             <button class="btn sm ghost" name="aktion" value="oeffnen">Wieder öffnen</button></form>`
           : r.status === 'sent' ? '<span class="pill good">in Lexware</span>' : ''}</td>
       </tr>`).join('') || `<tr><td colspan="6" class="muted">${status === 'open' ? 'Keine offenen Rechnungen. 🎉' : 'Keine Rechnungen.'}</td></tr>`}
@@ -488,10 +491,10 @@ export function createApp () {
     res.send(page({ title: 'Rechnungen', body, session: s, path: '/rechnungen', wide: true, ...flash(req) }))
   })
 
-  const invBack = (v) => (typeof v === 'string' && v.startsWith('/rechnungen') && !v.startsWith('//')) ? v.replace(/[?&](ok|fehler)=[^&]*/g, '') : '/rechnungen'
+  const invBack = (v, a) => withAnchor((typeof v === 'string' && v.startsWith('/rechnungen') && !v.startsWith('//')) ? v.replace(/[?&](ok|fehler)=[^&]*/g, '') : '/rechnungen', a)
   app.post('/rechnungen/aktion', async (req, res) => {
     const ids = [].concat(req.body.ids || []).map(x => int(x, 1, 1e12, 0)).filter(Boolean).slice(0, 300)
-    const to = invBack(req.body.zurueck)
+    const to = invBack(req.body.zurueck, req.body.anker)
     if (!ids.length) return back(res, to, { err: 'Keine Rechnung ausgewählt.' })
     try {
       if (req.body.aktion === 'buchhaltung') {
@@ -505,7 +508,7 @@ export function createApp () {
     } catch (e) { back(res, to, { err: errText(e) }) }
   })
   app.post('/rechnungen/:id/aendern', async (req, res) => {
-    try { await editInvoice(int(req.params.id, 1, 1e12, 0), req.body); back(res, invBack(req.body.zurueck), { msg: 'Angaben gespeichert.' }) } catch (e) { back(res, invBack(req.body.zurueck), { err: errText(e) }) }
+    try { await editInvoice(int(req.params.id, 1, 1e12, 0), req.body); back(res, invBack(req.body.zurueck, req.body.anker), { msg: 'Angaben gespeichert.' }) } catch (e) { back(res, invBack(req.body.zurueck, req.body.anker), { err: errText(e) }) }
   })
   app.get('/rechnungen/:id/datei', (req, res) => {
     const inv = getInvoice(int(req.params.id, 1, 1e12, 0))

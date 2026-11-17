@@ -116,3 +116,6 @@ tr.ist-sent td { opacity: .75; }
   .invoices td:nth-child(3), .invoices td:nth-child(5), .invoices td:nth-child(6) { grid-column: 2 / span 2; }
   .invoices td.nowrap { white-space: normal; }
 }
+/* Nach Aktionen bleibt die Liste an ihrer Stelle; Meldung bleibt oben sichtbar */
+tr[id] { scroll-margin-top: 70px; }
+.main > .alert { position: sticky; top: 8px; z-index: 5; box-shadow: 0 4px 14px rgba(0,0,0,.08); background: var(--card); }
