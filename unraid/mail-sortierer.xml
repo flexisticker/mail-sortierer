@@ -11,7 +11,7 @@
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <ExtraParams>--restart unless-stopped</ExtraParams>
-  <Config Name="Oberfläche" Target="8080" Default="8099" Mode="tcp" Description="Weboberfläche. NUR im Heimnetz verwenden, nicht über den Proxy nach außen freigeben." Type="Port" Display="always" Required="true" Mask="false">8099</Config>
+  <Config Name="Oberfläche" Target="8080" Default="8110" Mode="tcp" Description="Weboberfläche. NUR im Heimnetz verwenden, nicht über den Proxy nach außen freigeben." Type="Port" Display="always" Required="true" Mask="false">8110</Config>
   <Config Name="Daten" Target="/data" Default="/mnt/user/appdata/mail-sortierer" Mode="rw" Description="Datenbank, Einstellungen, Schlüssel (mitsichern)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/mail-sortierer</Config>
   <Config Name="Zeitzone" Target="TZ" Default="Europe/Berlin" Mode="" Description="Zeitzone" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Berlin</Config>
 </Container>

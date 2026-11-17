@@ -21,9 +21,9 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nie etwas gelöscht** – nur ver
    `ollama pull qwen2.5:7b` (GTX 1060 mit 6 GB) bzw. `ollama pull qwen2.5:3b` (3 GB).
 2. Vorlage `unraid/mail-sortierer.xml` nach `/boot/config/plugins/dockerMan/templates-user/` kopieren
    (oder in Unraid „Add Container“ von Hand: Image `ghcr.io/flexisticker/mail-sortierer:latest`,
-   Port 8099 → 8080, Pfad `/mnt/user/appdata/mail-sortierer` → `/data`).
+   Port 8110 → 8080, Pfad `/mnt/user/appdata/mail-sortierer` → `/data`).
    Der ghcr-Login auf dem Unraid-Stick (wie bei Vedly) gilt auch für dieses Image.
-3. `http://192.168.1.10:8099/` öffnen → Konto anlegen.
+3. `http://192.168.1.10:8110/` öffnen → Konto anlegen.
 4. **Einstellungen → Postfach**: Server, Benutzer, Passwort von Alfahosting (wie in Outlook) → „Speichern & testen“.
 5. **Einstellungen → Lokale KI**: Adresse von Ollama, z. B. `http://192.168.1.10:11434` → „Speichern & testen“.
 6. Optional **Gelernt → Bekannte Kontakte**: Kundenliste (CSV aus Vedly) einfügen.
