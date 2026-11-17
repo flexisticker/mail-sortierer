@@ -15,13 +15,26 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nie etwas gelöscht** – nur ver
   merkt er sich das beim nächsten Durchlauf (Beispiel für die KI + Absender-Regel, ab 2 gleichen Korrekturen fest).
   Dasselbe gilt für „Richtig wäre …“ in der Oberfläche.
 
+## Rechnungen (ab 1.1)
+
+- Mehrere Postfächer (Einstellungen → Postfächer), jedes mit eigenem Probelauf/Scharf.
+- Rechnungen aus allen Postfächern landen im **Sammel-Postfach** (z. B. rechnung@flexisticker.de) unter
+  `Rechnungen/JJJJ/JJJJ-MM` (Monat = Rechnungsdatum), mit Fähnchen in Outlook. Aus anderen Postfächern als Kopie,
+  das Original kommt dort nach `Sortiert/Rechnungen und Zahlungen`.
+- E-Rechnungen (ZUGFeRD/Factur-X, XRechnung) werden exakt aus der XML gelesen, sonst liest die lokale KI das PDF.
+- Doppelte (gleiche Nummer + Betrag oder gleiche Datei) werden nur einmal abgelegt.
+- **Scanner:** PDFs in die Unraid-Freigabe `scan` (Container `/scan`) – sie werden als Mail mit PDF in den Monatsordner gelegt
+  und nach `erledigt/JJJJ-MM` verschoben.
+- Seite **Rechnungen:** „Zur Buchhaltung“ (Lexware Office, „Belege zu prüfen“), „Privat“ (`Rechnungen/Privat/JJJJ`),
+  „Keine Rechnung“. Entscheidungen werden je Lieferant gemerkt und vorgeschlagen.
+
 ## Einrichten auf Unraid
 
 1. **Ollama** läuft schon. Modell laden (Konsole des Ollama-Containers):
    `ollama pull qwen2.5:7b` (GTX 1060 mit 6 GB) bzw. `ollama pull qwen2.5:3b` (3 GB).
 2. Vorlage `unraid/mail-sortierer.xml` nach `/boot/config/plugins/dockerMan/templates-user/` kopieren
    (oder in Unraid „Add Container“ von Hand: Image `ghcr.io/flexisticker/mail-sortierer:latest`,
-   Port 8110 → 8080, Pfad `/mnt/user/appdata/mail-sortierer` → `/data`).
+   Port 8110 → 8080, Pfad `/mnt/user/appdata/mail-sortierer` → `/data`, `/mnt/user/scan` → `/scan`).
    Der ghcr-Login auf dem Unraid-Stick (wie bei Vedly) gilt auch für dieses Image.
 3. `http://192.168.1.10:8110/` öffnen → Konto anlegen.
 4. **Einstellungen → Postfach**: Server, Benutzer, Passwort von Alfahosting (wie in Outlook) → „Speichern & testen“.

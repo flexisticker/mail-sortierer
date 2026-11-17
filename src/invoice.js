@@ -1,0 +1,563 @@
+// Rechnungen: auslesen (E-Rechnung/PDF/KI), nach Jahr/Monat im Sammel-Postfach ablegen, Scanner-Ordner, Lexware Office.
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
+import zlib from 'node:zlib'
+import { simpleParser } from 'mailparser'
+import { db, now, log, DATA_DIR, kvGet, kvSet } from './db.js'
+import { getConfig } from './config.js'
+import { chatJson } from './ollama.js'
+import { getAccount, accountLabel } from './accounts.js'
+import { withClient, ensurePath, appendMessage, moveMessage, findByMsgId, pathString } from './imap.js'
+import { getSecret } from './secrets.js'
+
+const BELEGE = path.join(DATA_DIR, 'belege')
+const MAX_SOURCE = 40 * 1024 * 1024
+const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember']
+export const monthName = (ym) => { const m = Number(String(ym).slice(5, 7)); return m ? MONTHS[m - 1] : '' }
+
+const byId = db.prepare('SELECT * FROM invoices WHERE id = ?')
+export const getInvoice = (id) => byId.get(Number(id))
+
+function upd (id, f) {
+  const k = Object.keys(f)
+  db.prepare(`UPDATE invoices SET ${k.map(x => x + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`).run(...k.map(x => f[x] ?? null), now(), id)
+}
+
+export function collecting (cfg = getConfig()) {
+  const acc = cfg.invoices.accountId ? getAccount(cfg.invoices.accountId) : null
+  return acc && acc.enabled ? acc : null
+}
+
+// ---------- Auslesen ----------
+
+const tag = (xml, name) => {
+  const m = xml.match(new RegExp(`<(?:[\\w-]+:)?${name}\\b[^>]*>([^<]*)<`))
+  return m ? m[1].trim() : ''
+}
+const block = (xml, name) => {
+  const m = xml.match(new RegExp(`<(?:[\\w-]+:)?${name}\\b[^>]*>([\\s\\S]*?)</(?:[\\w-]+:)?${name}>`))
+  return m ? m[1] : ''
+}
+const decodeXml = (s) => String(s || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+
+// E-Rechnung (ZUGFeRD/Factur-X/XRechnung CII oder UBL) – exakte Angaben
+export function parseEInvoice (xml) {
+  xml = String(xml || '')
+  if (/CrossIndustryInvoice/.test(xml)) {
+    const d = tag(block(xml, 'ExchangedDocument'), 'DateTimeString') || tag(xml, 'DateTimeString')
+    return {
+      kind: /xrechnung/i.test(tag(xml, 'ID') + block(xml, 'GuidelineSpecifiedDocumentContextParameter')) ? 'xrechnung' : 'zugferd',
+      number: decodeXml(tag(block(xml, 'ExchangedDocument'), 'ID')),
+      date: /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : '',
+      supplier: decodeXml(tag(block(xml, 'SellerTradeParty'), 'Name')),
+      amount: Number(tag(xml, 'GrandTotalAmount')) || null,
+      currency: tag(xml, 'InvoiceCurrencyCode') || 'EUR'
+    }
+  }
+  if (/<(?:[\w-]+:)?Invoice\b[\s\S]*urn:oasis:names:specification:ubl/.test(xml) || /<(?:[\w-]+:)?CreditNote\b/.test(xml)) {
+    const sup = block(xml, 'AccountingSupplierParty')
+    const top = xml.replace(/<(?:[\w-]+:)?(AccountingSupplierParty|AccountingCustomerParty|InvoiceLine|CreditNoteLine)\b[\s\S]*?<\/(?:[\w-]+:)?\1>/g, '')
+    const amt = xml.match(/<(?:[\w-]+:)?PayableAmount\b[^>]*currencyID="([A-Z]{3})"[^>]*>([^<]+)</)
+    return {
+      kind: 'xrechnung',
+      number: decodeXml(tag(top, 'ID')),
+      date: tag(top, 'IssueDate'),
+      supplier: decodeXml(tag(sup, 'RegistrationName') || tag(sup, 'Name')),
+      amount: amt ? Number(amt[2]) : null,
+      currency: amt ? amt[1] : 'EUR'
+    }
+  }
+  return null
+}
+
+// In ZUGFeRD-PDFs steckt die XML als eingebettete Datei (meist FlateDecode-Stream)
+export function embeddedXml (pdf) {
+  const s = pdf.toString('latin1')
+  const re = /<<((?:(?!>>\s*stream)[\s\S]){0,2000})>>\s*stream\r?\n/g
+  let m; let n = 0
+  while ((m = re.exec(s)) && n++ < 400) {
+    const start = m.index + m[0].length
+    const end = s.indexOf('endstream', start)
+    if (end < 0) break
+    if (end - start > 5 * 1024 * 1024) continue
+    let data = pdf.subarray(start, end)
+    try {
+      if (/FlateDecode/.test(m[1])) data = zlib.inflateSync(data, { finishFlush: zlib.constants.Z_SYNC_FLUSH })
+      const t = data.toString('utf8')
+      if (/CrossIndustryInvoice|urn:oasis:names:specification:ubl:schema:xsd:Invoice/.test(t) && t.includes('<')) return t.slice(t.indexOf('<'))
+    } catch { /* kein gültiger Stream */ }
+  }
+  return ''
+}
+
+export async function pdfText (buf) {
+  try {
+    const { getDocumentProxy, extractText } = await import('unpdf')
+    const doc = await getDocumentProxy(new Uint8Array(buf))
+    const { text } = await extractText(doc, { mergePages: true })
+    return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 5000)
+  } catch { return '' }
+}
+
+const INV_SCHEMA = {
+  type: 'object',
+  properties: {
+    ist_rechnung: { type: 'boolean' },
+    lieferant: { type: 'string' },
+    nummer: { type: 'string' },
+    datum: { type: 'string' },
+    betrag: { type: ['number', 'null'] },
+    waehrung: { type: 'string' },
+    privat: { type: 'boolean' },
+    grund: { type: 'string' }
+  },
+  required: ['ist_rechnung', 'lieferant', 'nummer', 'datum', 'betrag', 'waehrung', 'privat', 'grund']
+}
+
+async function kiExtract (cfg, { from, subject, text, fileName }) {
+  const r = await chatJson(cfg, [
+    { role: 'system', content: [
+      'Du liest Rechnungen für Flexisticker (Textil- und Tassendruck, Inhaber Michael) aus.',
+      'ist_rechnung: true nur für eine echte Rechnung oder Gutschrift (Beleg für die Buchhaltung) – nicht für Zahlungsbestätigung, Mahnung ohne Rechnung, Kontoauszug, Bestellbestätigung, Angebot oder Werbung.',
+      'lieferant: Firma, die die Rechnung stellt (kurz, ohne Rechtsform-Zusätze wenn eindeutig). nummer: Rechnungsnummer genau wie gedruckt.',
+      'datum: Rechnungsdatum als JJJJ-MM-TT (nicht Liefer- oder Fälligkeitsdatum), leer wenn unbekannt. betrag: Gesamtbetrag brutto als Zahl mit Punkt, null wenn unbekannt. waehrung: z. B. EUR.',
+      'privat: true nur, wenn die Rechnung eindeutig privat ist (an eine Privatperson ohne Firmenbezug, z. B. private Versicherung, Streaming, Kleidung für den Eigenbedarf). Im Zweifel false.',
+      'grund: höchstens 10 Wörter. Antworte nur mit JSON.'
+    ].join('\n') },
+    { role: 'user', content: `Von: ${from || '-'}\nBetreff: ${subject || '-'}\nDatei: ${fileName || '-'}\nInhalt:\n${String(text || '(kein Text lesbar)').slice(0, 4000)}` }
+  ], INV_SCHEMA)
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(r.datum || '')) ? r.datum : ''
+  return {
+    isInvoice: r.ist_rechnung !== false,
+    supplier: String(r.lieferant || '').slice(0, 120),
+    number: String(r.nummer || '').slice(0, 80),
+    date,
+    amount: typeof r.betrag === 'number' && isFinite(r.betrag) ? Math.round(r.betrag * 100) / 100 : null,
+    currency: /^[A-Z]{3}$/.test(String(r.waehrung || '')) ? r.waehrung : 'EUR',
+    private: !!r.privat,
+    reason: String(r.grund || '').slice(0, 150)
+  }
+}
+
+const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9äöüß]/g, '')
+export function dedupeKey ({ number, amount, supplier }) {
+  const n = norm(number)
+  if (!n || n.length < 3) return null
+  if (amount != null) return `${n}|${Number(amount).toFixed(2)}`
+  const s = norm(supplier).slice(0, 12)
+  return s ? `${n}|${s}` : null
+}
+export const supplierKey = (supplier, from) => norm(supplier).slice(0, 30) || String(from || '').toLowerCase()
+
+// Gemerkte Entscheidungen je Lieferant → Vorschlag geschäftlich/privat
+function learnedSuggestion (key) {
+  const d = kvGet('invoiceDecisions', {})[key]
+  if (!d) return null
+  if ((d.private || 0) > (d.business || 0)) return 'private'
+  if ((d.business || 0) > 0) return 'business'
+  return null
+}
+function learnDecision (inv, kind) {
+  const key = supplierKey(inv.supplier, inv.from_addr)
+  if (!key) return
+  const all = kvGet('invoiceDecisions', {})
+  const d = all[key] || {}
+  d[kind] = (d[kind] || 0) + 1
+  all[key] = d
+  kvSet('invoiceDecisions', all)
+}
+
+const safeName = (s) => String(s || 'rechnung').normalize('NFKC').replace(/[^\w.äöüÄÖÜß() -]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 100) || 'rechnung'
+
+function storeFile (buf, name, ym) {
+  const hash = crypto.createHash('sha256').update(buf).digest('hex')
+  const dir = path.join(BELEGE, ym.slice(0, 4) || 'ohne-datum')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `${hash.slice(0, 10)}-${safeName(name)}`)
+  if (!fs.existsSync(file)) fs.writeFileSync(file, buf)
+  return { file: path.relative(DATA_DIR, file), hash }
+}
+
+export const filePath = (rel) => {
+  const p = path.resolve(DATA_DIR, String(rel || ''))
+  return p.startsWith(BELEGE + path.sep) ? p : null
+}
+
+const ymOf = (date, fallback) => {
+  const d = /^\d{4}-\d{2}/.test(String(date || '')) ? String(date) : (fallback ? new Date(fallback).toISOString() : new Date().toISOString())
+  return d.slice(0, 7)
+}
+export function monthParts (cfg, ym) {
+  return [cfg.invoices.root || 'Rechnungen', ym.slice(0, 4), ym]
+}
+
+function findDuplicate (hash, key) {
+  if (hash) {
+    const h = db.prepare("SELECT * FROM invoices WHERE file_hash = ? AND status NOT IN ('error', 'duplicate') LIMIT 1").get(hash)
+    if (h) return h
+  }
+  if (key) return db.prepare("SELECT * FROM invoices WHERE dedupe = ? AND status NOT IN ('error', 'duplicate') LIMIT 1").get(key)
+  return null
+}
+
+// Beleg-Dateien + Angaben aus einer Mail (oder einem Scan) bestimmen
+export async function analyze (cfg, { source, pdf, pdfName, from, subject, mailDate, text }) {
+  let pdfBuf = pdf || null
+  let fileName = pdfName || ''
+  let xml = ''
+  let bodyText = text || ''
+  if (source) {
+    const parsed = await simpleParser(source, { skipImageLinks: true, skipTextToHtml: true })
+    bodyText = parsed.text || String(parsed.html || '').replace(/<[^>]+>/g, ' ')
+    const atts = parsed.attachments || []
+    const pdfs = atts.filter(a => /pdf/i.test(a.contentType) || /\.pdf$/i.test(a.filename || ''))
+    pdfs.sort((a, b) => (/rechnung|invoice|faktura|beleg/i.test(b.filename || '') ? 1 : 0) - (/rechnung|invoice|faktura|beleg/i.test(a.filename || '') ? 1 : 0))
+    if (pdfs[0]) { pdfBuf = pdfs[0].content; fileName = pdfs[0].filename || 'rechnung.pdf' }
+    const x = atts.find(a => /xml/i.test(a.contentType) || /\.xml$/i.test(a.filename || ''))
+    if (x) xml = x.content.toString('utf8')
+  }
+  if (!xml && pdfBuf) xml = embeddedXml(pdfBuf)
+  const e = xml ? parseEInvoice(xml) : null
+  const text2 = pdfBuf ? await pdfText(pdfBuf) : ''
+  let k = null
+  try {
+    k = await kiExtract(cfg, { from, subject, text: (text2 ? `[PDF] ${text2}\n[Mail] ` : '') + String(bodyText || '').slice(0, 1500), fileName })
+  } catch (err) {
+    if (!e) throw err // ohne E-Rechnung brauchen wir die KI
+  }
+  const info = {
+    isInvoice: e ? true : (k ? k.isInvoice : true),
+    supplier: (e && e.supplier) || (k && k.supplier) || '',
+    number: (e && e.number) || (k && k.number) || '',
+    date: (e && e.date) || (k && k.date) || '',
+    amount: e && e.amount != null ? e.amount : (k ? k.amount : null),
+    currency: (e && e.currency) || (k && k.currency) || 'EUR',
+    einvoice: e ? e.kind : '',
+    private: k ? k.private : false,
+    reason: k ? k.reason : 'E-Rechnung',
+    pdf: pdfBuf, fileName, xml: xml && e ? xml : ''
+  }
+  info.ym = ymOf(info.date, mailDate)
+  return info
+}
+
+function insertInvoice (f) {
+  const t = now()
+  const r = db.prepare(`INSERT INTO invoices (source, account_id, mail_id, msgid, from_addr, subject, supplier, number, inv_date, amount, currency, einvoice,
+    file, file_name, file_hash, xml_file, dedupe, folder, uid, same_message, suggestion, hint, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(f.source, f.account_id ?? null, f.mail_id ?? null, f.msgid ?? null, f.from_addr ?? null, f.subject ?? null, f.supplier || '', f.number || '', f.inv_date || '',
+      f.amount ?? null, f.currency || 'EUR', f.einvoice || '', f.file ?? null, f.file_name ?? null, f.file_hash ?? null, f.xml_file ?? null, f.dedupe ?? null,
+      f.folder ?? null, f.uid ?? null, f.same_message ? 1 : 0, f.suggestion ?? null, f.hint ?? null, f.status, t, t)
+  return byId.get(Number(r.lastInsertRowid))
+}
+
+function storeDocs (info) {
+  const out = {}
+  if (info.pdf) Object.assign(out, (({ file, hash }) => ({ file, file_hash: hash }))(storeFile(info.pdf, info.fileName || 'rechnung.pdf', info.ym)), { file_name: info.fileName || 'rechnung.pdf' })
+  if (info.xml) {
+    const x = storeFile(Buffer.from(info.xml, 'utf8'), (info.number ? 'e-rechnung-' + info.number : 'e-rechnung') + '.xml', info.ym)
+    out.xml_file = x.file
+    if (!out.file) { out.file = x.file; out.file_name = 'e-rechnung.xml'; out.file_hash = x.hash }
+  }
+  return out
+}
+
+function suggestionFor (info, from) {
+  const learned = learnedSuggestion(supplierKey(info.supplier, from))
+  return learned || (info.private ? 'private' : 'business')
+}
+
+// ---------- Mail im Posteingang eines Postfachs ist eine Rechnung ----------
+// Rückgabe { folder, uid } wenn die Mail selbst (im Sammel-Postfach) in den Monatsordner verschoben wurde, sonst null.
+export async function handleMailInvoice (ctx, acc, rec, client) {
+  const cfg = getConfig()
+  const target = collecting(cfg)
+  if (!target) return null
+  const m = await client.fetchOne(String(rec.uid), { size: true }, { uid: true })
+  if (!m) return null
+  if (m.size > MAX_SOURCE) { log('warn', `Rechnung „${rec.subject}“ ist zu groß (${Math.round(m.size / 1e6)} MB) – bitte von Hand ablegen`); return null }
+  const src = (await client.fetchOne(String(rec.uid), { source: true }, { uid: true })).source
+  const info = await analyze(cfg, { source: src, from: rec.from_addr, subject: rec.subject, mailDate: rec.date })
+  if (!info.isInvoice && !info.pdf && !info.xml) return null // Zahlungsmeldung o. ä.: nur einsortieren
+  const docs = storeDocs(info)
+  const key = dedupeKey(info)
+  const dup = findDuplicate(docs.file_hash, key)
+  const base = {
+    source: 'mail', account_id: acc.id, mail_id: rec.id, msgid: rec.msgid, from_addr: rec.from_addr, subject: rec.subject,
+    supplier: info.supplier, number: info.number, inv_date: info.date, amount: info.amount, currency: info.currency, einvoice: info.einvoice,
+    ...docs, dedupe: key, suggestion: suggestionFor(info, rec.from_addr), hint: info.isInvoice ? info.reason : 'KI: eher keine Rechnung – bitte prüfen'
+  }
+  if (dup) {
+    insertInvoice({ ...base, status: 'duplicate', hint: `doppelt – schon vorhanden (#${dup.id})` })
+    log('info', `Rechnung ${info.number || rec.subject} ist doppelt (schon #${dup.id}) – nicht erneut abgelegt`)
+    return null
+  }
+  const parts = monthParts(cfg, info.ym)
+  const flags = cfg.invoices.flagOpen ? ['\\Flagged'] : []
+  if (target.id === acc.id) {
+    // Mail liegt schon im Sammel-Postfach → direkt in den Monatsordner
+    const dest = await ensurePath(client, parts)
+    if (flags.length) await client.messageFlagsAdd(String(rec.uid), flags, { uid: true })
+    const newUid = await moveMessage(client, rec.uid, dest)
+    insertInvoice({ ...base, folder: dest, uid: newUid, same_message: 1, status: 'open' })
+    log('info', `Rechnung abgelegt: ${info.supplier || rec.from_addr} ${info.number} → ${dest}`)
+    return { folder: dest, uid: newUid }
+  }
+  const tc = await ctx.client(target)
+  const dest = await ensurePath(tc, parts)
+  const uid = await appendMessage(tc, dest, src, flags)
+  insertInvoice({ ...base, folder: dest, uid, same_message: 0, status: 'open' })
+  log('info', `Rechnung aus ${accountLabel(acc)} nach ${accountLabel(target)} kopiert: ${info.supplier || rec.from_addr} ${info.number} → ${dest}`)
+  return null
+}
+
+// ---------- Scanner-Ordner ----------
+
+const b64lines = (buf) => buf.toString('base64').replace(/.{76}/g, '$&\r\n')
+const encWord = (s) => `=?UTF-8?B?${Buffer.from(String(s), 'utf8').toString('base64')}?=`
+
+export function buildScanMail ({ to, subject, text, fileName, pdf, msgid, date }) {
+  const b = 'scan-' + crypto.randomBytes(8).toString('hex')
+  return Buffer.from([
+    'From: Scanner <scanner@mail-sortierer.invalid>',
+    `To: <${to}>`,
+    `Subject: ${encWord(subject)}`,
+    `Date: ${(date || new Date()).toUTCString().replace('GMT', '+0000')}`,
+    `Message-ID: ${msgid}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${b}"`,
+    '',
+    `--${b}`,
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    b64lines(Buffer.from(text, 'utf8')),
+    `--${b}`,
+    `Content-Type: application/pdf; name="${encWord(fileName)}"`,
+    `Content-Disposition: attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    'Content-Transfer-Encoding: base64',
+    '',
+    b64lines(pdf),
+    `--${b}--`,
+    ''
+  ].join('\r\n'), 'utf8')
+}
+
+function moveScanFile (dir, file, sub) {
+  const destDir = path.join(dir, 'erledigt', sub)
+  fs.mkdirSync(destDir, { recursive: true })
+  let dest = path.join(destDir, path.basename(file))
+  for (let i = 2; fs.existsSync(dest); i++) dest = path.join(destDir, path.basename(file, path.extname(file)) + ` (${i})` + path.extname(file))
+  fs.renameSync(file, dest)
+}
+
+export async function processScans (ctx, stats) {
+  const cfg = getConfig()
+  const target = collecting(cfg)
+  if (!cfg.invoices.scanEnabled || !target) return
+  if (target.mode !== 'live') return
+  const dir = cfg.invoices.scanDir
+  if (!dir || !fs.existsSync(dir)) { stats.scanError = `Scanner-Ordner ${dir} nicht gefunden`; return }
+  const files = fs.readdirSync(dir, { withFileTypes: true })
+    .filter(d => d.isFile() && /\.pdf$/i.test(d.name) && !d.name.startsWith('.'))
+    .map(d => path.join(dir, d.name))
+    .filter(f => Date.now() - fs.statSync(f).mtimeMs > 60000) // Scanner fertig?
+    .slice(0, 20)
+  for (const file of files) {
+    const name = path.basename(file)
+    try {
+      const pdf = fs.readFileSync(file)
+      if (pdf.subarray(0, 5).toString() !== '%PDF-') throw new Error('keine PDF-Datei')
+      const hash = crypto.createHash('sha256').update(pdf).digest('hex')
+      const msgid = `<scan-${hash.slice(0, 24)}@mail-sortierer.invalid>`
+      const info = await analyze(cfg, { pdf, pdfName: name, from: 'Scanner', subject: name, mailDate: fs.statSync(file).mtime })
+      const docs = storeDocs(info)
+      const key = dedupeKey(info)
+      const dup = findDuplicate(docs.file_hash, key)
+      const base = {
+        source: 'scan', msgid, from_addr: 'Scanner', subject: name, supplier: info.supplier, number: info.number, inv_date: info.date,
+        amount: info.amount, currency: info.currency, einvoice: info.einvoice, ...docs, dedupe: key,
+        suggestion: suggestionFor(info, ''), hint: info.isInvoice ? info.reason : 'KI: eher keine Rechnung – bitte prüfen'
+      }
+      if (dup) {
+        insertInvoice({ ...base, status: 'duplicate', hint: `doppelt – schon vorhanden (#${dup.id})` })
+        moveScanFile(dir, file, 'doppelt')
+        log('info', `Scan ${name} ist doppelt (schon #${dup.id})`)
+        continue
+      }
+      const tc = await ctx.client(target)
+      const dest = await ensurePath(tc, monthParts(cfg, info.ym))
+      const subject = `Scan: ${[info.supplier, info.number].filter(Boolean).join(' ') || name}`
+      const mail = buildScanMail({
+        to: target.user, subject, fileName: name, pdf, msgid, date: new Date(),
+        text: `Eingescannt am ${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}\nDatei: ${name}\nLieferant: ${info.supplier || '-'}\nRechnungsnummer: ${info.number || '-'}\nDatum: ${info.date || '-'}\nBetrag: ${info.amount != null ? info.amount.toFixed(2).replace('.', ',') + ' ' + info.currency : '-'}\n`
+      })
+      const uid = await appendMessage(tc, dest, mail, cfg.invoices.flagOpen ? ['\\Flagged'] : [])
+      insertInvoice({ ...base, account_id: target.id, folder: dest, uid, same_message: 1, status: 'open' })
+      moveScanFile(dir, file, info.ym)
+      stats.scans = (stats.scans || 0) + 1
+      log('info', `Scan abgelegt: ${name} → ${dest}`)
+    } catch (e) {
+      if (/Ollama/.test(e.message)) throw e // KI weg → später erneut
+      log('error', `Scan ${name}: ${e.message}`)
+      try { moveScanFile(dir, file, 'fehler') } catch { /* egal */ }
+    }
+  }
+}
+
+// ---------- Aktionen ----------
+
+async function withTarget (fn) {
+  const t = collecting()
+  if (!t) throw new Error('Kein Sammel-Postfach für Rechnungen eingestellt.')
+  return withClient(t, fn)
+}
+
+// Ablage-Mail im Sammel-Postfach in einen anderen Ordner bringen, Fähnchen setzen/entfernen
+async function relocate (client, inv, parts, flagged) {
+  if (!inv.folder) return {}
+  const dest = parts ? await ensurePath(client, parts) : inv.folder
+  const lock = await client.getMailboxLock(inv.folder)
+  try {
+    let uid = inv.uid
+    const ok = uid && ((await client.search({ uid: String(uid) }, { uid: true })) || []).length
+    if (!ok) uid = (await findByMsgId(client, inv.msgid))[0]
+    if (!uid) throw new Error(`Ablage-Mail nicht mehr in „${inv.folder}“ gefunden`)
+    if (flagged === true) await client.messageFlagsAdd(String(uid), ['\\Flagged'], { uid: true })
+    if (flagged === false) await client.messageFlagsRemove(String(uid), ['\\Flagged'], { uid: true })
+    if (dest === inv.folder) return { folder: dest, uid }
+    const newUid = await moveMessage(client, uid, dest)
+    return { folder: dest, uid: newUid }
+  } finally { lock.release() }
+}
+
+export async function lexwareUpload (inv) {
+  const cfg = getConfig()
+  const key = getSecret('lexwareKey')
+  if (!key) throw new Error('Kein Lexware-API-Schlüssel hinterlegt (Einstellungen → Rechnungen).')
+  const p = filePath(inv.file)
+  if (!p || !fs.existsSync(p)) throw new Error('Kein Beleg vorhanden – Rechnung z. B. im Kundenkonto des Lieferanten herunterladen und einscannen.')
+  const buf = fs.readFileSync(p)
+  if (buf.length > 5 * 1024 * 1024) throw new Error('Datei größer als 5 MB – Lexware nimmt sie nicht an. Bitte direkt in Lexware hochladen.')
+  const type = /\.xml$/i.test(p) ? 'application/xml' : /\.png$/i.test(p) ? 'image/png' : /\.jpe?g$/i.test(p) ? 'image/jpeg' : 'application/pdf'
+  const fd = new FormData()
+  fd.append('file', new Blob([buf], { type }), inv.file_name || path.basename(p))
+  fd.append('type', 'voucher')
+  const base = String(cfg.invoices.lexwareUrl || 'https://api.lexware.io').replace(/\/+$/, '')
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch(base + '/v1/files', { method: 'POST', headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' }, body: fd })
+    if (r.status === 429) { await new Promise(res => setTimeout(res, 1500 * (attempt + 1))); continue }
+    const text = await r.text()
+    if (!r.ok) throw new Error(`Lexware ${r.status}: ${text.slice(0, 300) || r.statusText}`)
+    try { return JSON.parse(text).id || '' } catch { return '' }
+  }
+  throw new Error('Lexware: zu viele Anfragen – später erneut versuchen.')
+}
+
+export async function lexwareTest () {
+  const cfg = getConfig()
+  const key = getSecret('lexwareKey')
+  if (!key) throw new Error('Kein Schlüssel hinterlegt.')
+  const r = await fetch(String(cfg.invoices.lexwareUrl).replace(/\/+$/, '') + '/v1/profile', { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } })
+  const t = await r.text()
+  if (!r.ok) throw new Error(`Lexware ${r.status}: ${t.slice(0, 200)}`)
+  const j = JSON.parse(t)
+  return j.companyName || j.organizationName || 'verbunden'
+}
+
+export async function toAccounting (ids) {
+  const done = []; const errors = []
+  const list = ids.map(getInvoice).filter(i => i && ['open', 'error', 'private', 'noinvoice'].includes(i.status))
+  if (!list.length) return { done, errors }
+  await withTarget(async (client) => {
+    for (const inv of list) {
+      try {
+        const lexId = await lexwareUpload(inv)
+        let loc = {}
+        try {
+          const cfg = getConfig()
+          loc = await relocate(client, inv, inv.status === 'open' || inv.status === 'error' ? null : monthParts(cfg, ymOf(inv.inv_date, inv.created_at)), false)
+        } catch (e) { log('warn', `Rechnung #${inv.id} an Lexware gesendet, aber Fähnchen nicht entfernt: ${e.message}`) }
+        upd(inv.id, { status: 'sent', lexware_id: lexId, decided_at: now(), error: null, ...loc })
+        learnDecision(inv, 'business')
+        done.push(inv.id)
+      } catch (e) {
+        upd(inv.id, { error: String(e.message).slice(0, 300) })
+        errors.push(`#${inv.id}: ${e.message}`)
+      }
+    }
+  })
+  if (done.length) log('info', `${done.length} Rechnung(en) an Lexware Office gesendet`)
+  return { done, errors }
+}
+
+export async function markPrivate (ids) {
+  const cfg = getConfig()
+  const list = ids.map(getInvoice).filter(i => i && ['open', 'error', 'noinvoice'].includes(i.status))
+  await withTarget(async (client) => {
+    for (const inv of list) {
+      const ym = ymOf(inv.inv_date, inv.created_at)
+      const loc = await relocate(client, inv, [cfg.invoices.root, cfg.invoices.privateName, ym.slice(0, 4)], false)
+      upd(inv.id, { status: 'private', decided_at: now(), error: null, ...loc })
+      learnDecision(inv, 'private')
+    }
+  })
+  return list.length
+}
+
+export async function markNoInvoice (ids) {
+  const cfg = getConfig()
+  const list = ids.map(getInvoice).filter(i => i && ['open', 'error', 'private', 'duplicate'].includes(i.status))
+  await withTarget(async (client) => {
+    for (const inv of list) {
+      const loc = inv.status === 'duplicate' ? {} : await relocate(client, inv, [cfg.invoices.root, cfg.invoices.noInvoiceName], false)
+      upd(inv.id, { status: 'noinvoice', decided_at: now(), error: null, ...loc })
+    }
+  })
+  return list.length
+}
+
+export async function reopen (ids) {
+  const cfg = getConfig()
+  const list = ids.map(getInvoice).filter(i => i && ['private', 'noinvoice'].includes(i.status))
+  await withTarget(async (client) => {
+    for (const inv of list) {
+      const loc = await relocate(client, inv, monthParts(cfg, ymOf(inv.inv_date, inv.created_at)), cfg.invoices.flagOpen)
+      upd(inv.id, { status: 'open', decided_at: null, ...loc })
+    }
+  })
+  return list.length
+}
+
+// Angaben von Hand korrigieren; anderer Monat → Ablage-Mail wandert mit
+export async function editInvoice (id, f) {
+  const inv = getInvoice(id)
+  if (!inv) throw new Error('Rechnung nicht gefunden')
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(f.inv_date) ? f.inv_date : ''
+  const amount = f.amount === '' || f.amount == null ? null : Number(String(f.amount).replace(/\./g, '').replace(',', '.'))
+  const next = {
+    supplier: String(f.supplier || '').slice(0, 120), number: String(f.number || '').slice(0, 80), inv_date: date,
+    amount: Number.isFinite(amount) ? Math.round(amount * 100) / 100 : null
+  }
+  next.dedupe = dedupeKey(next)
+  const cfg = getConfig()
+  const oldYm = ymOf(inv.inv_date, inv.created_at); const newYm = ymOf(next.inv_date, inv.created_at)
+  let loc = {}
+  if (oldYm !== newYm && ['open', 'sent', 'error'].includes(inv.status) && inv.folder) {
+    loc = await withTarget(client => relocate(client, inv, monthParts(cfg, newYm), undefined))
+  }
+  upd(inv.id, { ...next, ...loc })
+}
+
+// Mail wurde in der Oberfläche von „Rechnungen“ weg korrigiert
+export async function dropForMail (mailId) {
+  const list = db.prepare("SELECT * FROM invoices WHERE mail_id = ? AND status IN ('open', 'error', 'private')").all(mailId)
+  for (const inv of list) {
+    if (inv.same_message) upd(inv.id, { status: 'noinvoice', decided_at: now(), hint: 'als Mail anders einsortiert' })
+    else await markNoInvoice([inv.id])
+  }
+}
+
+export const STATUS = { open: 'Offen', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler' }

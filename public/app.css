@@ -100,3 +100,19 @@ code { background: var(--bg); padding: 1px 5px; border-radius: 5px; font-size: 1
   .mails .inline select { max-width: 60vw; }
 }
 label > .pill { justify-self: start; }
+details.acc { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+details.acc > summary { cursor: pointer; font-size: 14px; color: var(--text); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+details.acc[open] > summary { margin-bottom: 12px; }
+.form.mini { gap: 8px; margin-top: 8px; }
+.warn-text { color: var(--warn); }
+tr.ist-sent td { opacity: .75; }
+.invoices .from { font-weight: 600; word-break: break-word; }
+@media (max-width: 700px) {
+  .invoices thead { display: none; }
+  .invoices, .invoices tbody { display: block; }
+  .invoices tr { display: grid; grid-template-columns: 28px 1fr auto; gap: 4px 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .invoices td { display: block; border: 0; padding: 0; min-width: 0; }
+  .invoices td:nth-child(1) { grid-row: 1 / span 4; }
+  .invoices td:nth-child(3), .invoices td:nth-child(5), .invoices td:nth-child(6) { grid-column: 2 / span 2; }
+  .invoices td.nowrap { white-space: normal; }
+}

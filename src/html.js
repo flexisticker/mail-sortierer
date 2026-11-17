@@ -1,11 +1,12 @@
 // Kleine HTML-Helfer für die serverseitig erzeugten Seiten (alles maskiert).
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const VERSION = process.env.APP_VERSION || '1.0.0'
+export const VERSION = process.env.APP_VERSION || '1.1.0'
 
 const NAV = [
   ['/', 'Übersicht'],
   ['/mails', 'Mails'],
+  ['/rechnungen', 'Rechnungen'],
   ['/gelernt', 'Gelernt'],
   ['/protokoll', 'Protokoll'],
   ['/einstellungen', 'Einstellungen']

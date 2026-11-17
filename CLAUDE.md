@@ -9,11 +9,12 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Ollama läuft auf Michaels Unraid mit **GTX 1060** → Standardmodell `qwen2.5:7b` (3-GB-Karte: `qwen2.5:3b`).
 - Nie löschen, nur verschieben; unsicher = bleibt im Posteingang. Start im **Probelauf**.
 - Lernen aus Korrekturen (Outlook-Verschiebungen werden erkannt) – Modell wird nicht trainiert, sondern Regeln + Beispiele (Few-Shot).
-- **Schritt 2 (geplant, nicht gebaut):** Eingangsrechnungen aus Mails + Scanner-Ordner (Unraid-Freigabe), lokale KI prüft
+- **Schritt 2 = gebaut in 1.1.0** (Details unten unter Stand). Ursprünglicher Plan: Eingangsrechnungen aus Mails + Scanner-Ordner (Unraid-Freigabe), lokale KI prüft
   „Rechnung? geschäftlich?“, E-Rechnungen (ZUGFeRD/XRechnung) exakt aus XML, Doppel-Erkennung (Mail + Scan),
   Freigabe-Liste → erst nach Klick **an Lexware Office** (`POST /v1/files`, type voucher → „Belege zu prüfen“),
   eigener Lexware-API-Schlüssel nur mit Rechten „Dateien/Belegbilder hochladen + lesen“. Original-Mail bleibt im Postfach.
-  Später evtl. Verknüpfung mit dem Einkauf in Vedly.
+  **Vedly-Anbindung (Schritt C, besprochen, nicht gebaut):** Kontakte automatisch aus Vedly, Lieferantenrechnung erscheint im Vedly-Einkauf
+  bei der passenden Bestellung (Betrag/Wareneingang prüfen), „Zur Buchhaltung“ dann über Vedlys Lexware-Anbindung. Sortierer bleibt der Eingang.
 
 ## Architektur
 
@@ -49,3 +50,17 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   von Hand einsortiert), „Richtig wäre“/„passt“/Rückgängig in der Oberfläche, Regeln (auch von Hand, Domain), Kontaktliste (CSV/Liste),
   Einstellungen mit IMAP-/KI-Test, Protokoll, Handy-Ansicht. Getestet gegen GreenMail + Ollama-Mock (Playwright 1280/390 px, hell/dunkel).
   **Nicht getestet:** echtes Alfahosting-IMAP (Namensraum `INBOX.`?), echtes Ollama/GTX 1060 (Laufzeit, Qualität der Einordnung), großes Postfach.
+- **1.1.0 (17.11.2026):** Mehrere Postfächer (Tabelle `accounts`, Passwort `imap:<id>`, `mode` probe|live je Postfach; Umzug von 1.0:
+  `migrateAccounts` macht aus `config.imap` Postfach 1, `mails` bekommt `account_id`, UNIQUE(account_id, msgid); kv `watch`/`inboxBaseline` je Postfach).
+  **Rechnungen** (`src/invoice.js`, Tabelle `invoices`): Sammel-Postfach `config.invoices.accountId` (Michael: rechnung@flexisticker.de),
+  Ablage `Rechnungen/JJJJ/JJJJ-MM` nach Rechnungsdatum, `\Flagged` = offen. Mail im Sammel-Postfach wird selbst verschoben (`same_message`),
+  aus anderen Postfächern APPEND der ganzen Mail (Original → Sortiert/Rechnungen). Auslesen: XML-Anhang bzw. in PDF eingebettete XML
+  (`embeddedXml`, FlateDecode-Streams) → `parseEInvoice` (CII + UBL), sonst `unpdf`-Text + KI (`kiExtract`, JSON-Schema mit privat/geschäftlich).
+  Doppelt: `file_hash` oder `dedupeKey` (Nummer + Betrag). Belege als Datei unter `DATA_DIR/belege/JJJJ/`. Scanner: `config.invoices.scanDir`
+  (`/scan`), nur wenn Sammel-Postfach scharf, Datei älter als 60 s, Mail mit PDF wird per APPEND angelegt (`buildScanMail`), Datei → `erledigt/JJJJ-MM|doppelt|fehler`.
+  Aktionen: Lexware `POST /v1/files` (multipart, `type=voucher`, max. 5 MB, Schlüssel `lexwareKey`), Privat → `Rechnungen/Privat/JJJJ`,
+  Keine Rechnung → `Rechnungen/Keine Rechnung`, Wieder öffnen, Angaben ändern (anderer Monat = Mail wandert mit). Entscheidungen je Lieferant kv `invoiceDecisions`.
+  Unraid-Port **8110** (8099/8100 belegt), Pfad `/mnt/user/scan` → `/scan`, Symbol `/icon.png`.
+  Getestet: GreenMail mit 2 Postfächern, PDF/ZUGFeRD (pdf-lib attach)/XRechnung-XML/CC-Doppel/Scan, Lexware-Nachbau, Umzug einer 1.0-Datenbank, 1280/390 px.
+  **Nicht getestet:** echtes Lexware (`/v1/files` mit XML-Datei?), echte Scanner-PDFs ohne Textebene (dann Angaben von Hand), echte ZUGFeRD-PDFs
+  mit Objektströmen (Einbettung evtl. nicht gefunden → KI liest PDF-Text).

@@ -1,5 +1,6 @@
 // Einstellungen mit Vorgaben. Gespeichert in kv 'config'; Passwort separat verschlüsselt (secrets.js).
 import { kvGet, kvSet } from './db.js'
+import { listAccounts } from './accounts.js'
 
 // Kategorien = Unterordner von „Sortiert“. id bleibt fest (Regeln/Beispiele zeigen darauf), Name/Beschreibung änderbar.
 export const DEFAULT_CATEGORIES = [
@@ -13,11 +14,20 @@ export const DEFAULT_CATEGORIES = [
 ]
 
 export const DEFAULT_CONFIG = {
-  imap: { host: '', port: 993, secure: true, user: '', allowSelfSigned: false },
+  imap: { host: '', port: 993, secure: true, user: '', allowSelfSigned: false }, // nur noch für den Umzug von 1.0
+  invoices: {
+    accountId: 0,            // Sammel-Postfach (z. B. rechnung@flexisticker.de); 0 = Rechnungen nicht sammeln
+    root: 'Rechnungen',      // Rechnungen/2026/2026-11
+    privateName: 'Privat',   // Rechnungen/Privat/2026
+    noInvoiceName: 'Keine Rechnung',
+    flagOpen: true,          // offene Rechnungen in Outlook mit Fähnchen
+    scanEnabled: false,
+    scanDir: '/scan',        // Scanner-Ordner im Container (Unraid: Freigabe → /scan)
+    lexwareUrl: 'https://api.lexware.io'
+  },
   ollama: { url: 'http://192.168.1.10:11434', model: 'qwen2.5:7b', timeoutSec: 120, numCtx: 4096 },
   root: 'Sortiert',
   categories: DEFAULT_CATEGORIES,
-  mode: 'probe',            // probe = Probelauf (nur anzeigen), live = verschieben
   paused: false,
   intervalMin: 5,           // wie oft nachsehen
   batchDay: 25,             // Mails je Durchlauf tagsüber
@@ -73,7 +83,7 @@ export function targetLabel (id, c = getConfig()) {
 
 export function ownAddresses (c = getConfig()) {
   return String(c.ownAddresses || '').split(/[,;\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean)
-    .concat(c.imap.user && c.imap.user.includes('@') ? [c.imap.user.toLowerCase()] : [])
+    .concat(listAccounts().map(a => String(a.user || '').toLowerCase()).filter(u => u.includes('@')))
 }
 
 export function isNight (c = getConfig(), d = new Date()) {

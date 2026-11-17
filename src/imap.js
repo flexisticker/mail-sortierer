@@ -2,27 +2,26 @@
 import crypto from 'node:crypto'
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
-import { getSecret } from './secrets.js'
+import { accountPassword } from './accounts.js'
 
 const READ_BYTES = 96 * 1024   // so viel von jeder Mail wird gelesen (Anhänge nicht)
 const SNIPPET = 1500
 
-export function connect (cfg) {
-  const { host, port, secure, user, allowSelfSigned } = cfg.imap
-  if (!host || !user) throw new Error('IMAP ist noch nicht eingerichtet (Einstellungen).')
-  const pass = getSecret('imapPassword')
-  if (!pass) throw new Error('IMAP-Passwort fehlt (Einstellungen).')
+export function connect (acc) {
+  if (!acc || !acc.host || !acc.user) throw new Error('Postfach ist nicht vollständig eingerichtet (Einstellungen → Postfächer).')
+  const pass = accountPassword(acc)
+  if (!pass) throw new Error(`Passwort für ${acc.user} fehlt (Einstellungen → Postfächer).`)
   return new ImapFlow({
-    host, port: Number(port) || 993, secure: secure !== false,
-    auth: { user, pass },
+    host: acc.host, port: Number(acc.port) || 993, secure: !!acc.secure,
+    auth: { user: acc.user, pass },
     logger: false,
-    tls: allowSelfSigned ? { rejectUnauthorized: false } : undefined,
+    tls: acc.allow_self_signed ? { rejectUnauthorized: false } : undefined,
     connectionTimeout: 30000, greetingTimeout: 20000, socketTimeout: 5 * 60000
   })
 }
 
-export async function withClient (cfg, fn) {
-  const client = connect(cfg)
+export async function withClient (acc, fn) {
+  const client = connect(acc)
   client.on('error', () => {}) // Fehler kommen über die awaits
   await client.connect()
   try { return await fn(client) } finally { await client.logout().catch(() => client.close()) }
@@ -154,4 +153,38 @@ export async function findByMsgId (client, msgid) {
   if (!msgid || msgid.startsWith('<sortierer-')) return []
   const r = await client.search({ header: { 'message-id': msgid } }, { uid: true })
   return Array.isArray(r) ? r : []
+}
+
+// Ordner (auch verschachtelt) anlegen und abonnieren, falls nötig. parts = ['Rechnungen', '2026', '2026-11']
+export async function ensurePath (client, parts, known) {
+  const have = known || new Set((await client.list()).map(b => b.path))
+  for (let i = 1; i <= parts.length; i++) {
+    const p = pathString(client, parts.slice(0, i))
+    if (have.has(p)) continue
+    await client.mailboxCreate(parts.slice(0, i))
+    await client.mailboxSubscribe(p).catch(() => {})
+    have.add(p)
+  }
+  return pathString(client, parts)
+}
+
+// Ganze Mail (mit Anhängen) laden – nur für Rechnungen
+export async function fetchSource (client, uid) {
+  const m = await client.fetchOne(String(uid), { source: true }, { uid: true })
+  if (!m || !m.source) throw new Error('Mail nicht mehr vorhanden')
+  return m.source
+}
+
+export async function appendMessage (client, path, source, flags) {
+  const r = await client.append(path, source, flags || [])
+  return (r && r.uid) || null
+}
+
+export async function setFlag (client, path, uid, flag, on) {
+  if (!uid) return
+  const lock = await client.getMailboxLock(path)
+  try {
+    if (on) await client.messageFlagsAdd(String(uid), [flag], { uid: true })
+    else await client.messageFlagsRemove(String(uid), [flag], { uid: true })
+  } finally { lock.release() }
 }

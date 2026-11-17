@@ -1,13 +1,16 @@
 // Weboberfläche (nur Heimnetz): Übersicht, Mails mit Korrektur, Gelerntes, Protokoll, Einstellungen.
 import express from 'express'
 import path from 'node:path'
+import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { db, now, log } from './db.js'
 import { hasUsers, createUser, login, logout, sessionFor, verifyPassword, changePassword } from './auth.js'
 import { getConfig, saveConfig, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
-import { runOnce, isRunning, getStatus, correct, confirm, undo, requeueKept } from './worker.js'
+import { runOnce, isRunning, getStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
+import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
+import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, editInvoice, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
 import { listModels } from './ollama.js'
 import { classify } from './classify.js'
@@ -125,63 +128,74 @@ export function createApp () {
   app.get('/', (req, res) => {
     const cfg = getConfig()
     const st = getStatus()
+    const accSt = getAccStatus()
+    const accounts = listAccounts()
     const counts = Object.fromEntries(db.prepare('SELECT status, COUNT(*) n FROM mails GROUP BY status').all().map(r => [r.status, r.n]))
     const byCat = Object.fromEntries(db.prepare("SELECT decision, COUNT(*) n FROM mails WHERE status IN ('planned','moved') GROUP BY decision").all().map(r => [r.decision, r.n]))
     const today = db.prepare("SELECT COUNT(*) n FROM mails WHERE status = 'moved' AND moved_at >= ?").get(new Date(new Date().setHours(0, 0, 0, 0)).toISOString()).n
-    const corrections = db.prepare("SELECT COUNT(*) n FROM examples").get().n
+    const corrections = db.prepare('SELECT COUNT(*) n FROM examples').get().n
     const rules = db.prepare("SELECT COUNT(*) n FROM rules WHERE state = 'active'").get().n
     const suggestions = db.prepare("SELECT COUNT(*) n FROM rules WHERE state = 'suggest'").get().n
-    const imapOk = !!(cfg.imap.host && cfg.imap.user && hasSecret('imapPassword'))
-    const live = cfg.mode === 'live'
+    const openInv = db.prepare("SELECT COUNT(*) n FROM invoices WHERE status IN ('open','error')").get().n
+    const target = collecting(cfg)
     const s = req.session
+    const anyLive = accounts.some(a => a.mode === 'live')
     const steps = [
-      [imapOk, 'Postfach eintragen und testen', '/einstellungen#imap'],
+      [accounts.length > 0, 'Postfächer eintragen und testen', '/einstellungen#postfaecher'],
       [!!st.lastOk, 'Ollama testen und ersten Durchlauf starten', '/einstellungen#ki'],
+      [!!target, 'Sammel-Postfach für Rechnungen wählen (rechnung@…)', '/einstellungen#rechnungen'],
       [(counts.planned || 0) + (counts.moved || 0) > 0, 'Vorschläge im Probelauf ansehen und korrigieren', '/mails?status=planned'],
-      [live, 'Scharf schalten – dann wird wirklich verschoben', '#modus']
+      [anyLive, 'Postfächer scharf schalten – dann wird wirklich verschoben', '#postfaecher']
     ]
     const body = `
     <h1>Übersicht</h1>
     ${steps.every(x => x[0]) ? '' : `<section class="card"><h2>Erste Schritte</h2><ol class="steps">${steps.map(([done, text, href]) => `<li class="${done ? 'done' : ''}"><a href="${href}">${esc(text)}</a></li>`).join('')}</ol></section>`}
+    ${openInv ? `<section class="card"><h2>Rechnungen</h2><p><b>${openInv}</b> offene Rechnung(en) warten auf „Zur Buchhaltung“ oder „Privat“.</p><a class="btn primary" href="/rechnungen">Rechnungen ansehen</a></section>` : ''}
+    <section class="card" id="postfaecher"><h2>Postfächer</h2>
+      ${accounts.length ? `<div class="table-wrap"><table class="tbl"><tbody>
+      ${accounts.map(a => { const x = accSt[a.id] || {}; return `<tr>
+        <td><b>${esc(accountLabel(a))}</b>${target && target.id === a.id ? ' <span class="pill info">Rechnungen</span>' : ''}<div class="muted small">${esc(a.user)}${a.enabled ? '' : ' · ausgeschaltet'}</div>
+          ${x.lastError ? `<div class="bad small">${esc(x.lastError)}</div>` : ''}</td>
+        <td><span class="pill ${a.mode === 'live' ? 'good' : 'warn'}">${a.mode === 'live' ? 'Scharf' : 'Probelauf'}</span>
+          <div class="muted small">${x.lastOk ? 'zuletzt ' + fmtDate(x.lastOk) : 'noch nicht gelaufen'}${x.left ? ` · ${x.left} warten` : ''}</div></td>
+        <td class="nowrap"><form method="post" action="/aktion/modus" class="inline">${csrf(s)}<input type="hidden" name="account" value="${a.id}">
+          ${a.mode === 'live'
+            ? '<input type="hidden" name="mode" value="probe"><button class="btn sm">Probelauf</button>'
+            : `<input type="hidden" name="mode" value="live"><button class="btn sm primary" data-confirm="${esc(accountLabel(a))} scharf schalten? Vorgemerkte Mails werden beim nächsten Durchlauf verschoben.">Scharf schalten</button>`}</form></td>
+      </tr>` }).join('')}</tbody></table></div>` : '<p class="muted">Noch kein Postfach eingetragen.</p>'}
+      <p class="muted small">Probelauf = nur anzeigen, was passieren würde. Scharf = verschieben (gelöscht wird nie).</p>
+      <a class="btn" href="/einstellungen#postfaecher">Postfächer verwalten</a>
+    </section>
     <div class="grid">
-      <section class="card" id="modus"><h2>Modus</h2>
-        <p class="big ${live ? 'live' : 'probe'}">${live ? 'Scharf – Mails werden verschoben' : 'Probelauf – es wird nichts verschoben'}</p>
-        <p class="muted">${live ? 'Neue Mails landen automatisch in den Ordnern unter „' + esc(cfg.root) + '“. Gelöscht wird nie.' : 'Der Sortierer zeigt nur, was er tun würde. Prüfe die Vorschläge unter „Mails“ und korrigiere, was nicht passt.'}</p>
-        <form method="post" action="/aktion/modus" class="row">${csrf(s)}
-          ${live
-            ? '<input type="hidden" name="mode" value="probe"><button class="btn">Zurück in den Probelauf</button>'
-            : `<input type="hidden" name="mode" value="live"><button class="btn primary" data-confirm="Jetzt scharf schalten? Vorgemerkte Mails (${counts.planned || 0}) werden beim nächsten Durchlauf verschoben.">Scharf schalten</button>`}
-        </form>
-        <form method="post" action="/aktion/pause" class="row">${csrf(s)}<input type="hidden" name="paused" value="${cfg.paused ? '0' : '1'}">
-          <button class="btn">${cfg.paused ? 'Zeitplan fortsetzen' : 'Zeitplan anhalten'}</button>${cfg.paused ? ' <span class="pill warn">angehalten</span>' : ''}</form>
-      </section>
       <section class="card"><h2>Letzter Durchlauf</h2>
         ${isRunning() || st.running ? '<p class="pill info">läuft gerade …</p>' : ''}
         ${st.lastError ? `<div class="alert bad">${esc(st.lastError)}</div>` : ''}
         <dl class="facts">
           <dt>Zuletzt</dt><dd>${st.lastEnd ? fmtDate(st.lastEnd) : 'noch nie'}</dd>
-          <dt>Ergebnis</dt><dd>${st.last ? `${st.last.read} gelesen, ${st.last.moved} verschoben, ${st.last.planned} vorgemerkt, ${st.last.corrections} Korrekturen` : '–'}</dd>
-          <dt>Warten noch</dt><dd>${st.backlogLeft ? st.backlogLeft + ' Mails im Posteingang (werden nach und nach bearbeitet, nachts mehr)' : 'nichts'}</dd>
+          <dt>Ergebnis</dt><dd>${st.last ? `${st.last.read} gelesen, ${st.last.moved} verschoben, ${st.last.planned} vorgemerkt, ${st.last.corrections} Korrekturen${st.last.invoices ? `, ${st.last.invoices} Rechnungen` : ''}${st.last.scans ? `, ${st.last.scans} Scans` : ''}` : '–'}</dd>
+          <dt>Warten noch</dt><dd>${st.backlogLeft ? st.backlogLeft + ' Mails (werden nach und nach bearbeitet, nachts mehr)' : 'nichts'}</dd>
           <dt>Takt</dt><dd>alle ${cfg.intervalMin} Min., je Durchlauf ${cfg.batchDay} Mails (nachts ${cfg.batchNight})</dd>
         </dl>
-        <form method="post" action="/aktion/lauf">${csrf(s)}<button class="btn primary"${imapOk ? '' : ' disabled'}>Jetzt durchlaufen</button></form>
-      </section>
-    </div>
-    <div class="grid">
-      <section class="card"><h2>Ordner</h2>
-        <table class="tbl"><tbody>
-        ${activeCategories(cfg).map(c => `<tr><td><a href="/mails?ordner=${c.id}">${esc(c.name)}</a></td><td class="num">${byCat[c.id] || 0}</td></tr>`).join('')}
-        <tr><td><a href="/mails?status=kept">Bleibt im Posteingang</a></td><td class="num">${counts.kept || 0}</td></tr>
-        </tbody></table>
-        <p class="muted">Heute verschoben: ${today}</p>
+        <div class="row wrap">
+          <form method="post" action="/aktion/lauf">${csrf(s)}<button class="btn primary"${accounts.length ? '' : ' disabled'}>Jetzt durchlaufen</button></form>
+          <form method="post" action="/aktion/pause">${csrf(s)}<input type="hidden" name="paused" value="${cfg.paused ? '0' : '1'}"><button class="btn">${cfg.paused ? 'Zeitplan fortsetzen' : 'Zeitplan anhalten'}</button></form>
+          ${cfg.paused ? '<span class="pill warn">angehalten</span>' : ''}
+        </div>
       </section>
       <section class="card"><h2>Gelernt</h2>
         <dl class="facts"><dt>Feste Regeln</dt><dd>${rules}</dd><dt>Regel-Vorschläge</dt><dd>${suggestions}</dd><dt>Beispiele aus Korrekturen</dt><dd>${corrections}</dd></dl>
-        <p class="muted">Ziehst du in Outlook eine Mail in einen anderen Ordner (oder zurück in den Posteingang), merkt sich der Sortierer das beim nächsten Durchlauf.</p>
-        <a class="btn" href="/gelernt">Ansehen</a>
-        <form method="post" action="/aktion/neu-pruefen" class="row">${csrf(s)}<button class="btn" data-confirm="Unsichere Mails im Posteingang beim nächsten Durchlauf neu einordnen lassen?">Unsichere neu einordnen</button></form>
+        <p class="muted">Ziehst du in Outlook eine Mail in einen anderen Ordner (oder zurück in den Posteingang), merkt sich der Sortierer das beim nächsten Durchlauf – in allen Postfächern.</p>
+        <div class="row wrap"><a class="btn" href="/gelernt">Ansehen</a>
+        <form method="post" action="/aktion/neu-pruefen">${csrf(s)}<button class="btn" data-confirm="Unsichere Mails im Posteingang beim nächsten Durchlauf neu einordnen lassen?">Unsichere neu einordnen</button></form></div>
       </section>
-    </div>`
+    </div>
+    <section class="card"><h2>Ordner</h2>
+      <table class="tbl"><tbody>
+      ${activeCategories(cfg).map(c => `<tr><td><a href="/mails?ordner=${c.id}">${esc(c.name)}</a></td><td class="num">${byCat[c.id] || 0}</td></tr>`).join('')}
+      <tr><td><a href="/mails?status=kept">Bleibt im Posteingang</a></td><td class="num">${counts.kept || 0}</td></tr>
+      </tbody></table>
+      <p class="muted">Heute verschoben: ${today}</p>
+    </section>`
     res.send(page({ title: 'Übersicht', body, session: s, path: '/', ...flash(req) }))
   })
 
@@ -190,11 +204,13 @@ export function createApp () {
     back(res, '/', { msg: 'Durchlauf gestartet – die Seite in ein paar Sekunden neu laden.' })
   })
   app.post('/aktion/modus', (req, res) => {
+    const acc = getAccount(req.body.account)
+    if (!acc) return back(res, '/', { err: 'Postfach nicht gefunden.' })
     const mode = req.body.mode === 'live' ? 'live' : 'probe'
-    saveConfig({ mode })
-    log('info', mode === 'live' ? 'Scharf geschaltet' : 'Zurück in den Probelauf')
+    setAccountMode(acc.id, mode)
+    log('info', `${accountLabel(acc)}: ${mode === 'live' ? 'scharf geschaltet' : 'zurück in den Probelauf'}`)
     if (mode === 'live') runOnce('scharf geschaltet')
-    back(res, '/', { msg: mode === 'live' ? 'Scharf geschaltet – Ordner werden angelegt und Mails verschoben.' : 'Probelauf – es wird nichts mehr verschoben.' })
+    back(res, '/#postfaecher', { msg: mode === 'live' ? `${accountLabel(acc)} ist scharf – Ordner werden angelegt und Mails verschoben.` : `${accountLabel(acc)}: Probelauf – es wird nichts mehr verschoben.` })
   })
   app.post('/aktion/pause', (req, res) => {
     saveConfig({ paused: req.body.paused === '1' })
@@ -212,19 +228,23 @@ export function createApp () {
     const status = String(req.query.status || '')
     const ordner = String(req.query.ordner || '')
     const quelle = String(req.query.quelle || '')
+    const konto = String(req.query.postfach || '')
     const q = String(req.query.q || '').trim().slice(0, 100)
+    const accounts = listAccounts()
+    const accName = Object.fromEntries(accounts.map(a => [a.id, accountLabel(a)]))
     const pageNo = int(req.query.seite, 1, 10000, 1)
     const where = []; const args = []
     if (status) { where.push('status = ?'); args.push(status) }
     if (ordner) { where.push('decision = ?'); args.push(ordner) }
     if (quelle) { where.push('source = ?'); args.push(quelle) }
+    if (konto) { where.push('account_id = ?'); args.push(Number(konto)) }
     if (q) { where.push('(from_addr LIKE ? OR from_name LIKE ? OR subject LIKE ?)'); args.push(`%${q}%`, `%${q}%`, `%${q}%`) }
     const w = where.length ? 'WHERE ' + where.join(' AND ') : ''
     const total = db.prepare(`SELECT COUNT(*) n FROM mails ${w}`).get(...args).n
     const per = 100
     const rows = db.prepare(`SELECT * FROM mails ${w} ORDER BY COALESCE(date, created_at) DESC, id DESC LIMIT ? OFFSET ?`).all(...args, per, (pageNo - 1) * per)
     const targets = [['inbox', 'Posteingang'], ...activeCategories(cfg).map(c => [c.id, c.name])]
-    const qs = (p) => { const u = new URLSearchParams({ ...(status && { status }), ...(ordner && { ordner }), ...(quelle && { quelle }), ...(q && { q }), seite: p }); return '/mails?' + u }
+    const qs = (p) => { const u = new URLSearchParams({ ...(status && { status }), ...(ordner && { ordner }), ...(quelle && { quelle }), ...(konto && { postfach: konto }), ...(q && { q }), seite: p }); return '/mails?' + u }
     const here = req.originalUrl
     const body = `
     <h1>Mails</h1>
@@ -232,17 +252,18 @@ export function createApp () {
       <select name="status"><option value="">Alle Zustände</option>${options(Object.entries(STATUS_LABEL), status)}</select>
       <select name="ordner"><option value="">Alle Ziele</option>${options(targets, ordner)}</select>
       <select name="quelle"><option value="">Alle Quellen</option>${options(Object.entries(SOURCE_LABEL), quelle)}</select>
+      ${accounts.length > 1 ? `<select name="postfach"><option value="">Alle Postfächer</option>${options(accounts.map(a => [a.id, accountLabel(a)]), konto)}</select>` : ''}
       <input name="q" value="${esc(q)}" placeholder="Absender oder Betreff">
       <button class="btn">Filtern</button>
     </form>
-    <p class="muted">${total} Mails${cfg.mode !== 'live' ? ' · <b>Probelauf:</b> „Vorgemerkt“ heißt, so würde verschoben. Korrigieren hier lernt sofort mit.' : ''}</p>
+    <p class="muted">${total} Mails${accounts.some(a => a.mode !== 'live') ? ' · <b>Probelauf:</b> „Vorgemerkt“ heißt, so würde verschoben. Korrigieren hier lernt sofort mit.' : ''}</p>
     <form method="post" action="/mails/rueckgaengig" id="bulk">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"></form>
     <div class="table-wrap"><table class="tbl mails">
       <thead><tr><th><input type="checkbox" data-all="sel" aria-label="Alle wählen"></th><th>Datum</th><th>Absender / Betreff</th><th>Einordnung</th><th>Richtig wäre</th></tr></thead>
       <tbody>
       ${rows.map(r => `<tr class="st-${esc(r.status)}">
         <td><input type="checkbox" name="ids" value="${r.id}" form="bulk" class="sel"></td>
-        <td class="nowrap">${fmtDate(r.date || r.created_at)}</td>
+        <td class="nowrap">${fmtDate(r.date || r.created_at)}${accounts.length > 1 ? `<div class="muted small">${esc(accName[r.account_id] || '')}</div>` : ''}</td>
         <td><div class="from">${esc(r.from_name || r.from_addr)} <span class="muted">&lt;${esc(r.from_addr)}&gt;</span></div>
           <div class="subj">${esc(r.subject || '(ohne Betreff)')}</div>
           ${r.snippet ? `<details><summary>Text</summary><div class="snip">${esc(String(r.snippet).slice(0, 700))}</div></details>` : ''}</td>
@@ -392,6 +413,109 @@ export function createApp () {
     back(res, '/gelernt', { msg: `${r.changes} Kontakte gelöscht.` })
   })
 
+  // --- Rechnungen ---
+  app.get('/rechnungen', (req, res) => {
+    const cfg = getConfig()
+    const s = req.session
+    const status = req.query.status === undefined ? 'open' : String(req.query.status)
+    const jahr = String(req.query.jahr || '')
+    const monat = String(req.query.monat || '')
+    const q = String(req.query.q || '').trim().slice(0, 100)
+    const where = []; const args = []
+    if (status === 'open') where.push("status IN ('open', 'error')")
+    else if (status) { where.push('status = ?'); args.push(status) }
+    const ym = "COALESCE(NULLIF(substr(inv_date, 1, 7), ''), substr(created_at, 1, 7))"
+    if (jahr) { where.push(`substr(${ym}, 1, 4) = ?`); args.push(jahr) }
+    if (monat) { where.push(`substr(${ym}, 6, 2) = ?`); args.push(monat.padStart(2, '0')) }
+    if (q) { where.push('(supplier LIKE ? OR number LIKE ? OR from_addr LIKE ? OR subject LIKE ?)'); args.push(...Array(4).fill(`%${q}%`)) }
+    const w = where.length ? 'WHERE ' + where.join(' AND ') : ''
+    const rows = db.prepare(`SELECT * FROM invoices ${w} ORDER BY ${ym} DESC, inv_date DESC, id DESC LIMIT 500`).all(...args)
+    const sum = rows.filter(r => r.amount != null && r.status !== 'duplicate').reduce((a, r) => a + r.amount, 0)
+    const counts = Object.fromEntries(db.prepare('SELECT status, COUNT(*) n FROM invoices GROUP BY status').all().map(r => [r.status, r.n]))
+    const years = db.prepare(`SELECT DISTINCT substr(${ym}, 1, 4) y FROM invoices ORDER BY y DESC`).all().map(r => r.y).filter(Boolean)
+    const accName = Object.fromEntries(listAccounts().map(a => [a.id, accountLabel(a)]))
+    const target = collecting(cfg)
+    const here = req.originalUrl
+    const money = (v, c) => v == null ? '–' : v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + (c && c !== 'EUR' ? c : '€')
+    const ymd = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : ''
+    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['', 'Alle']]
+    const body = `
+    <h1>Rechnungen</h1>
+    ${target ? '' : '<div class="alert bad">Noch kein Sammel-Postfach gewählt – <a href="/einstellungen#rechnungen">Einstellungen → Rechnungen</a>.</div>'}
+    ${hasSecret('lexwareKey') ? '' : '<div class="alert bad">Noch kein Lexware-Schlüssel hinterlegt – „Zur Buchhaltung“ geht erst danach (<a href="/einstellungen#rechnungen">Einstellungen</a>).</div>'}
+    <form method="get" action="/rechnungen" class="filters">
+      <select name="status">${options(statusOpts, status)}</select>
+      <select name="jahr"><option value="">Alle Jahre</option>${options(years.map(y => [y, y]), jahr)}</select>
+      <select name="monat"><option value="">Alle Monate</option>${options(Array.from({ length: 12 }, (_, i) => [String(i + 1).padStart(2, '0'), monthName('2000-' + String(i + 1).padStart(2, '0'))]), monat)}</select>
+      <input name="q" value="${esc(q)}" placeholder="Lieferant, Nummer, Absender">
+      <button class="btn">Filtern</button>
+    </form>
+    <p class="muted">${rows.length} Rechnungen · Summe ${money(sum)}${status === 'open' ? ' · Offene haben in Outlook ein Fähnchen.' : ''}</p>
+    <form method="post" action="/rechnungen/aktion" id="ibulk">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"></form>
+    <div class="table-wrap"><table class="tbl invoices">
+      <thead><tr><th><input type="checkbox" data-all="isel" aria-label="Alle wählen"></th><th>Datum</th><th>Lieferant / Nummer</th><th class="num">Betrag</th><th>Herkunft</th><th>Aktion</th></tr></thead>
+      <tbody>
+      ${rows.map(r => `<tr class="ist-${esc(r.status)}">
+        <td><input type="checkbox" name="ids" value="${r.id}" form="ibulk" class="isel"></td>
+        <td class="nowrap">${ymd(r.inv_date) || '<span class="muted">ohne Datum</span>'}</td>
+        <td><div class="from">${esc(r.supplier || r.from_addr || '?')}</div><div class="small">${r.number ? 'Nr. ' + esc(r.number) : '<span class="muted">ohne Nummer</span>'}
+          ${r.einvoice ? ` <span class="pill info">${r.einvoice === 'xrechnung' ? 'XRechnung' : 'ZUGFeRD'}</span>` : ''}
+          ${r.file ? ` · <a href="/rechnungen/${r.id}/datei" target="_blank" rel="noopener">${/\.xml$/i.test(r.file) ? 'XML' : 'PDF'} ansehen</a>` : ' · <span class="bad">kein Beleg angehängt</span>'}</div>
+          ${r.status === 'open' || r.status === 'error' ? `<div class="small ${r.suggestion === 'private' ? 'warn-text' : 'muted'}">Vorschlag: ${r.suggestion === 'private' ? 'Privat' : 'Geschäftlich'}${r.hint ? ' · ' + esc(r.hint) : ''}</div>` : `<div class="small muted">${esc(INV_STATUS[r.status] || r.status)}${r.decided_at ? ' · ' + fmtDate(r.decided_at) : ''}${r.hint && r.status === 'duplicate' ? ' · ' + esc(r.hint) : ''}</div>`}
+          ${r.error ? `<div class="bad small">${esc(r.error)}</div>` : ''}
+          <details><summary>Angaben ändern</summary><form method="post" action="/rechnungen/${r.id}/aendern" class="form two mini">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}">
+            <label>Lieferant<input name="supplier" value="${esc(r.supplier)}" maxlength="120"></label>
+            <label>Nummer<input name="number" value="${esc(r.number)}" maxlength="80"></label>
+            <label>Rechnungsdatum<input name="inv_date" type="date" value="${esc(r.inv_date)}"></label>
+            <label>Betrag brutto<input name="amount" value="${r.amount != null ? esc(String(r.amount).replace('.', ',')) : ''}" inputmode="decimal"></label>
+            <div class="row span"><button class="btn sm">Speichern</button></div></form></details></td>
+        <td class="num nowrap">${money(r.amount, r.currency)}</td>
+        <td class="small">${r.source === 'scan' ? 'Scan' : esc(accName[r.account_id] || 'Mail')}<div class="muted">${esc(r.source === 'scan' ? r.subject : r.from_addr)}</div></td>
+        <td class="nowrap">${(r.status === 'open' || r.status === 'error') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
+            <button class="btn sm primary" name="aktion" value="buchhaltung"${r.file ? '' : ' disabled'}>Zur Buchhaltung</button>
+            <button class="btn sm" name="aktion" value="privat">Privat</button>
+            <button class="btn sm ghost" name="aktion" value="keine">Keine Rechnung</button></form>`
+          : (r.status === 'private' || r.status === 'noinvoice') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
+            <button class="btn sm ghost" name="aktion" value="oeffnen">Wieder öffnen</button></form>`
+          : r.status === 'sent' ? '<span class="pill good">in Lexware</span>' : ''}</td>
+      </tr>`).join('') || `<tr><td colspan="6" class="muted">${status === 'open' ? 'Keine offenen Rechnungen. 🎉' : 'Keine Rechnungen.'}</td></tr>`}
+      </tbody></table></div>
+    ${rows.length ? `<div class="row wrap">
+      <button class="btn primary" form="ibulk" name="aktion" value="buchhaltung" data-confirm="Ausgewählte Rechnungen an Lexware Office senden?">Ausgewählte zur Buchhaltung</button>
+      <button class="btn" form="ibulk" name="aktion" value="privat">Ausgewählte privat</button>
+      <button class="btn ghost" form="ibulk" name="aktion" value="keine">Ausgewählte: keine Rechnung</button>
+    </div>` : ''}`
+    res.send(page({ title: 'Rechnungen', body, session: s, path: '/rechnungen', wide: true, ...flash(req) }))
+  })
+
+  const invBack = (v) => (typeof v === 'string' && v.startsWith('/rechnungen') && !v.startsWith('//')) ? v.replace(/[?&](ok|fehler)=[^&]*/g, '') : '/rechnungen'
+  app.post('/rechnungen/aktion', async (req, res) => {
+    const ids = [].concat(req.body.ids || []).map(x => int(x, 1, 1e12, 0)).filter(Boolean).slice(0, 300)
+    const to = invBack(req.body.zurueck)
+    if (!ids.length) return back(res, to, { err: 'Keine Rechnung ausgewählt.' })
+    try {
+      if (req.body.aktion === 'buchhaltung') {
+        const r = await toAccounting(ids)
+        return back(res, to, r.errors.length ? { err: `${r.done.length} gesendet, Fehler: ${r.errors.join(' | ')}` } : { msg: `${r.done.length} Rechnung(en) an Lexware Office gesendet – dort unter „Belege zu prüfen“.` })
+      }
+      if (req.body.aktion === 'privat') return back(res, to, { msg: `${await markPrivate(ids)} als privat abgelegt.` })
+      if (req.body.aktion === 'keine') return back(res, to, { msg: `${await markNoInvoice(ids)} als „keine Rechnung“ abgelegt.` })
+      if (req.body.aktion === 'oeffnen') return back(res, to, { msg: `${await reopen(ids)} wieder offen.` })
+      back(res, to, { err: 'Unbekannte Aktion.' })
+    } catch (e) { back(res, to, { err: errText(e) }) }
+  })
+  app.post('/rechnungen/:id/aendern', async (req, res) => {
+    try { await editInvoice(int(req.params.id, 1, 1e12, 0), req.body); back(res, invBack(req.body.zurueck), { msg: 'Angaben gespeichert.' }) } catch (e) { back(res, invBack(req.body.zurueck), { err: errText(e) }) }
+  })
+  app.get('/rechnungen/:id/datei', (req, res) => {
+    const inv = getInvoice(int(req.params.id, 1, 1e12, 0))
+    const p = inv && filePath(inv.file)
+    if (!p || !fs.existsSync(p)) return res.status(404).send('Nicht gefunden')
+    const isXml = /\.xml$/i.test(p)
+    res.set({ 'Content-Type': isXml ? 'text/plain; charset=utf-8' : 'application/pdf', 'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'", 'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(inv.file_name || 'rechnung')}` })
+    res.sendFile(p)
+  })
+
   // --- Protokoll ---
   app.get('/protokoll', (req, res) => {
     const rows = db.prepare('SELECT * FROM log ORDER BY id DESC LIMIT 400').all()
@@ -407,18 +531,46 @@ export function createApp () {
     const s = req.session
     const models = (req.query.modelle || '').split(',').filter(Boolean)
     const chk = (v) => v ? ' checked' : ''
+    const accounts = listAccounts()
+    const target = collecting(cfg)
+    const accountForm = (a) => `<form method="post" action="/postfaecher" class="form two">${csrf(s)}<input type="hidden" name="id" value="${a ? a.id : ''}">
+        <label>Name (frei)<input name="name" value="${esc(a ? a.name : '')}" maxlength="80" placeholder="z. B. Info, Rechnung, Michael"></label>
+        <label>Benutzer (meist die Mail-Adresse)<input name="user" value="${esc(a ? a.user : '')}" autocomplete="off" maxlength="200" required></label>
+        <label>Server<input name="host" value="${esc(a ? a.host : (accounts[0] ? accounts[0].host : ''))}" placeholder="z. B. alfa3xxx.alfahosting-server.de" maxlength="200" required></label>
+        <label>Port<input name="port" type="number" value="${esc(a ? a.port : 993)}" min="1" max="65535"></label>
+        <label>Passwort${a && accountHasPassword(a) ? ' <span class="pill good">gespeichert</span>' : ''}<input name="pass" type="password" autocomplete="new-password" placeholder="${a && accountHasPassword(a) ? 'leer lassen = unverändert' : ''}"${a ? '' : ' required'}></label>
+        <label class="check"><input type="checkbox" name="secure" value="1"${chk(a ? a.secure : 1)}> SSL/TLS (Port 993)</label>
+        <label class="check"><input type="checkbox" name="enabled" value="1"${chk(a ? a.enabled : 1)}> Sortieren eingeschaltet</label>
+        <label class="check"><input type="checkbox" name="allowSelfSigned" value="1"${chk(a ? a.allow_self_signed : 0)}> Zertifikat nicht prüfen (nur wenn nötig)</label>
+        <div class="row span"><button class="btn primary" name="next" value="save">${a ? 'Speichern' : 'Hinzufügen'}</button><button class="btn" name="next" value="test">${a ? 'Speichern' : 'Hinzufügen'} &amp; testen</button></div>
+      </form>`
     const body = `
     <h1>Einstellungen</h1>
-    <section class="card" id="imap"><h2>Postfach (IMAP)</h2>
-      <p class="muted">Zugangsdaten deines Postfachs bei Alfahosting (dieselben wie in Outlook). Das Passwort wird verschlüsselt gespeichert und nie angezeigt.</p>
-      <form method="post" action="/einstellungen/imap" class="form two">${csrf(s)}
-        <label>Server<input name="host" value="${esc(cfg.imap.host)}" placeholder="z. B. alfa3xxx.alfahosting-server.de" maxlength="200"></label>
-        <label>Port<input name="port" type="number" value="${esc(cfg.imap.port)}" min="1" max="65535"></label>
-        <label>Benutzer (meist die Mail-Adresse)<input name="user" value="${esc(cfg.imap.user)}" autocomplete="off" maxlength="200"></label>
-        <label>Passwort${hasSecret('imapPassword') ? ' <span class="pill good">gespeichert</span>' : ''}<input name="pass" type="password" autocomplete="new-password" placeholder="${hasSecret('imapPassword') ? 'leer lassen = unverändert' : ''}"></label>
-        <label class="check"><input type="checkbox" name="secure" value="1"${chk(cfg.imap.secure)}> SSL/TLS (Port 993)</label>
-        <label class="check"><input type="checkbox" name="allowSelfSigned" value="1"${chk(cfg.imap.allowSelfSigned)}> Zertifikat nicht prüfen (nur wenn nötig)</label>
-        <div class="row span"><button class="btn primary" name="next" value="save">Speichern</button><button class="btn" name="next" value="test">Speichern &amp; testen</button></div>
+    <section class="card" id="postfaecher"><h2>Postfächer</h2>
+      <p class="muted">Alle Postfächer, die sortiert werden sollen (Zugangsdaten wie in Outlook). Passwörter werden verschlüsselt gespeichert und nie angezeigt. Gelerntes gilt für alle Postfächer.</p>
+      ${accounts.map(a => `<details class="acc"${String(req.query.offen) === String(a.id) ? ' open' : ''}><summary><b>${esc(accountLabel(a))}</b> <span class="muted small">${esc(a.user)} · ${esc(a.host)}</span>
+          <span class="pill ${a.mode === 'live' ? 'good' : 'warn'}">${a.mode === 'live' ? 'Scharf' : 'Probelauf'}</span>${a.enabled ? '' : ' <span class="pill">aus</span>'}${target && target.id === a.id ? ' <span class="pill info">Rechnungen</span>' : ''}</summary>
+        ${accountForm(a)}
+        <form method="post" action="/postfaecher/${a.id}/loeschen" class="row">${csrf(s)}<button class="btn ghost sm" data-confirm="${esc(accountLabel(a))} aus dem Sortierer entfernen? Im Postfach selbst bleibt alles, wie es ist.">Postfach entfernen</button></form>
+      </details>`).join('')}
+      <details class="acc"${accounts.length ? '' : ' open'}><summary><b>+ Postfach hinzufügen</b></summary>${accountForm(null)}</details>
+    </section>
+
+    <section class="card" id="rechnungen"><h2>Rechnungen</h2>
+      <p class="muted">Rechnungen aus allen Postfächern werden im Sammel-Postfach nach Jahr und Monat abgelegt (z. B. „${esc(cfg.invoices.root)}/2026/2026-11“). Aus anderen Postfächern kommt eine Kopie, das Original wandert dort nach „Sortiert/Rechnungen“. Offene Rechnungen bekommen in Outlook ein Fähnchen.</p>
+      <form method="post" action="/einstellungen/rechnungen" class="form two">${csrf(s)}
+        <label>Sammel-Postfach<select name="accountId"><option value="0">– Rechnungen nicht sammeln –</option>${options(accounts.map(a => [a.id, accountLabel(a) + ' (' + a.user + ')']), cfg.invoices.accountId)}</select></label>
+        <label>Hauptordner<input name="root" value="${esc(cfg.invoices.root)}" maxlength="60"></label>
+        <label>Ordner für Privates<input name="privateName" value="${esc(cfg.invoices.privateName)}" maxlength="60"></label>
+        <label>Ordner für „keine Rechnung“<input name="noInvoiceName" value="${esc(cfg.invoices.noInvoiceName)}" maxlength="60"></label>
+        <label class="check span"><input type="checkbox" name="flagOpen" value="1"${chk(cfg.invoices.flagOpen)}> Offene Rechnungen in Outlook mit Fähnchen markieren</label>
+        <label class="check"><input type="checkbox" name="scanEnabled" value="1"${chk(cfg.invoices.scanEnabled)}> Scanner-Ordner abholen</label>
+        <label>Scanner-Ordner (im Container)<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="200"></label>
+        <p class="muted small span">Der Scanner legt PDFs in die Unraid-Freigabe „scan“ (im Container <code>/scan</code>). Verarbeitete Dateien wandern nach <code>erledigt/JJJJ-MM</code>, doppelte nach <code>erledigt/doppelt</code> – gelöscht wird nichts. Scans werden nur abgeholt, wenn das Sammel-Postfach scharf ist.</p>
+        <label>Lexware-API-Schlüssel${hasSecret('lexwareKey') ? ' <span class="pill good">gespeichert</span>' : ''}<input name="lexwareKey" type="password" autocomplete="new-password" placeholder="${hasSecret('lexwareKey') ? 'leer lassen = unverändert' : 'Schlüssel aus Lexware Office'}"></label>
+        <label>Lexware-Adresse<input name="lexwareUrl" value="${esc(cfg.invoices.lexwareUrl)}" maxlength="200"></label>
+        <p class="muted small span">Eigenen Schlüssel anlegen (Lexware Office → Erweiterungen → Public API) mit möglichst wenigen Rechten: <b>Dateien/Belegbilder hochladen</b> und <b>Profil lesen</b>. „Zur Buchhaltung“ legt die Rechnung in Lexware unter „Belege zu prüfen“ ab.</p>
+        <div class="row span"><button class="btn primary" name="next" value="save">Speichern</button><button class="btn" name="next" value="test">Speichern &amp; Lexware testen</button></div>
       </form></section>
 
     <section class="card" id="ki"><h2>Lokale KI (Ollama)</h2>
@@ -468,28 +620,54 @@ export function createApp () {
     res.send(page({ title: 'Einstellungen', body, session: s, path: '/einstellungen', ...flash(req) }))
   })
 
-  app.post('/einstellungen/imap', async (req, res) => {
+  app.post('/postfaecher', async (req, res) => {
     const b = req.body
-    const cfg = saveConfig({ imap: {
-      host: String(b.host || '').trim().replace(/^imaps?:\/\//, '').slice(0, 200),
-      port: int(b.port, 1, 65535, 993),
-      user: String(b.user || '').trim().slice(0, 200),
-      secure: b.secure === '1',
-      allowSelfSigned: b.allowSelfSigned === '1'
-    } })
-    if (b.pass) setSecret('imapPassword', String(b.pass).slice(0, 500))
-    if (b.next !== 'test') return back(res, '/einstellungen#imap', { msg: 'Gespeichert.' })
+    let acc
     try {
-      const info = await withClient(cfg, async (client) => {
+      acc = saveAccount({ id: b.id, name: b.name, host: b.host, port: b.port, user: b.user, secure: b.secure === '1', allowSelfSigned: b.allowSelfSigned === '1', enabled: b.enabled === '1' }, b.pass)
+    } catch (e) { return back(res, '/einstellungen#postfaecher', { err: errText(e) }) }
+    const to = `/einstellungen?offen=${acc.id}#postfaecher`
+    if (b.next !== 'test') return back(res, to, { msg: `${accountLabel(acc)} gespeichert.` })
+    try {
+      const info = await withClient(acc, async (client) => {
         const folders = await listFolders(client)
         const st = await client.status('INBOX', { messages: true, unseen: true })
         return { folders, st, ns: client.namespace }
       })
-      log('info', `IMAP-Test ok: ${info.st.messages} Mails im Posteingang`)
-      back(res, '/einstellungen#imap', { msg: `Verbindung klappt: ${info.st.messages} Mails im Posteingang (${info.st.unseen} ungelesen), ${info.folders.length} Ordner. Trennzeichen „${(info.ns && info.ns.delimiter) || '?'}“${info.ns && info.ns.prefix ? `, Namensraum „${info.ns.prefix}“` : ''}.` })
+      log('info', `${accountLabel(acc)}: Test ok, ${info.st.messages} Mails im Posteingang`)
+      back(res, to, { msg: `${accountLabel(acc)}: Verbindung klappt – ${info.st.messages} Mails im Posteingang (${info.st.unseen} ungelesen), ${info.folders.length} Ordner. Es läuft im Probelauf, bis du es in der Übersicht scharf schaltest.` })
     } catch (e) {
-      back(res, '/einstellungen#imap', { err: 'IMAP-Test fehlgeschlagen: ' + (e.authenticationFailed ? 'Benutzer oder Passwort falsch.' : errText(e)) })
+      back(res, to, { err: `${accountLabel(acc)}: Test fehlgeschlagen – ` + (e.authenticationFailed ? 'Benutzer oder Passwort falsch.' : errText(e)) })
     }
+  })
+  app.post('/postfaecher/:id/loeschen', (req, res) => {
+    const acc = getAccount(req.params.id)
+    if (!acc) return back(res, '/einstellungen#postfaecher', { err: 'Nicht gefunden.' })
+    deleteAccount(acc.id)
+    if (getConfig().invoices.accountId === acc.id) saveConfig({ invoices: { accountId: 0 } })
+    log('info', `Postfach ${accountLabel(acc)} entfernt`)
+    back(res, '/einstellungen#postfaecher', { msg: `${accountLabel(acc)} entfernt.` })
+  })
+
+  app.post('/einstellungen/rechnungen', async (req, res) => {
+    const b = req.body
+    const accId = int(b.accountId, 0, 1e9, 0)
+    if (accId && !getAccount(accId)) return back(res, '/einstellungen#rechnungen', { err: 'Postfach nicht gefunden.' })
+    const lexUrl = String(b.lexwareUrl || '').trim()
+    if (lexUrl && !/^https:\/\//.test(lexUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(lexUrl)) return back(res, '/einstellungen#rechnungen', { err: 'Lexware-Adresse muss mit https:// beginnen.' })
+    saveConfig({ invoices: {
+      accountId: accId,
+      root: cleanFolderName(b.root) || 'Rechnungen',
+      privateName: cleanFolderName(b.privateName) || 'Privat',
+      noInvoiceName: cleanFolderName(b.noInvoiceName) || 'Keine Rechnung',
+      flagOpen: b.flagOpen === '1',
+      scanEnabled: b.scanEnabled === '1',
+      scanDir: String(b.scanDir || '/scan').trim().slice(0, 200),
+      lexwareUrl: lexUrl || 'https://api.lexware.io'
+    } })
+    if (b.lexwareKey) setSecret('lexwareKey', String(b.lexwareKey).trim().slice(0, 500))
+    if (b.next !== 'test') return back(res, '/einstellungen#rechnungen', { msg: 'Gespeichert.' })
+    try { const name = await lexwareTest(); back(res, '/einstellungen#rechnungen', { msg: `Lexware Office verbunden: ${name}` }) } catch (e) { back(res, '/einstellungen#rechnungen', { err: 'Lexware-Test fehlgeschlagen: ' + errText(e) }) }
   })
 
   app.post('/einstellungen/ki', async (req, res) => {
