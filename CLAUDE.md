@@ -32,6 +32,8 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Beispiele als user/assistant-Paare. Unter `minConfidence` (Ausmisten `minConfidenceTrash`) → Posteingang mit Vorschlag im Grund.
 - Sicherheit: ein Konto, scrypt 2^16, Sitzung nur SHA-256, Cookie HttpOnly/SameSite=Strict, CSRF-Feld + Origin-Prüfung, 5 Fehlversuche → 15 Min.,
   IMAP-Passwort AES-256-GCM (`secrets.js`, Schlüssel `DATA_DIR/.schluessel`). Nur Heimnetz (kein HTTPS im Container).
+- Zweige wie bei Vedly: Entwicklung `claude/…`, **`main` = Produktivstand (`:latest`)** – jede Auslieferung auch nach `main` pushen.
+  Paket auf ghcr.io ist **öffentlich** (Unraid hat für neue Pakete keine gültige Anmeldung).
 - Docker: `ghcr.io/flexisticker/mail-sortierer`, Action `.github/workflows/docker.yml` (gitleaks + npm audit vor dem Build). Unraid-Vorlage `unraid/`, Host-Port 8099.
 
 ## Testen
