@@ -3,7 +3,7 @@
 // Ohne gültige Lizenz (nach 30 Tagen Test): nur noch Probelauf – nichts wird verschoben, nichts an Lexware geschickt.
 // Installationen, die es schon vor 1.5.0 gab, gelten als Eigeninstallation und laufen ohne Lizenz.
 import crypto from 'node:crypto'
-import { db, kvGet, kvSet, log } from './db.js'
+import { sysdb as db, sysGet as kvGet, sysSet as kvSet, sysLog as log } from './db.js'
 import { TRUSTED_KEYS } from './license-keys.js'
 
 export const PRODUCT = 'mailsort'

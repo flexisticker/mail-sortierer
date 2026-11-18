@@ -5,8 +5,12 @@ import fs from 'node:fs'
 import crypto from 'node:crypto'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { db, now, log } from './db.js'
-import { hasUsers, createUser, login, logout, sessionFor, verifyPassword, changePassword } from './auth.js'
+import { db, now, log, withUser } from './db.js'
+import { hasUsers, sessionFor, getUser, featuresOf, verifyPassword, changePassword, checkSecondFactor, regenerateRecovery, recoveryLeft } from './auth.js'
+import { COOKIE, sessionCookie, cookie, back, int, errText, flash } from './webutil.js'
+import { shield, noteVisitor, isHome } from './shield.js'
+import { registerLogin } from './web-login.js'
+import { registerAdmin } from './web-admin.js'
 import { PLATFORM, getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
@@ -15,33 +19,11 @@ import { licenseState, activate, checkin, release } from './license.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
 import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, markOrder, reopen, release as releaseInvoice, editInvoice, forgetInvoiceLearning, applyYearSetting, checkScanDir, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
-import { listModels } from './ollama.js'
 import { parseDnsServers, systemDnsServers, testBlocklists } from './security.js'
 import { cleanupCfg, requestEmpty } from './cleanup.js'
-import { classify } from './classify.js'
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public')
-const COOKIE = 'ms_sitzung'
 
-// SameSite=Lax: Cookie kommt auch mit, wenn man über einen Link (Unraid „WebUI“, Lesezeichen aus einer Mail) kommt.
-// Schutz gegen fremde Formulare bleibt: CSRF-Feld + Herkunftsprüfung.
-function sessionCookie (token, remember) {
-  return `${COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${remember ? `; Max-Age=${30 * 86400}` : ''}`
-}
-
-function cookie (req, name) {
-  const m = String(req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith(name + '='))
-  return m ? decodeURIComponent(m.slice(name.length + 1)) : ''
-}
-
-function back (res, to, { msg, err } = {}) {
-  const u = new URL(to, 'http://x')
-  if (msg) u.searchParams.set('ok', String(msg).slice(0, 300))
-  if (err) u.searchParams.set('fehler', String(err).slice(0, 300))
-  res.redirect(303, u.pathname + u.search + u.hash)
-}
-
-const int = (v, min, max, def) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def }
 // Warnhinweise der Sicherheitsprüfung
 function riskBox (r) {
   let reasons = []
@@ -54,25 +36,44 @@ function riskBox (r) {
 
 // Nach einer Aktion zur Zeile davor springen – so bleibt man an derselben Stelle der Liste
 const anchor = (rows, i, p) => i > 0 ? `<input type="hidden" name="anker" value="${p}${rows[i - 1].id}">` : ''
-const errText = (e) => String((e && (e.responseText || e.message)) || e).slice(0, 300)
+
+// Seiten, die in jeder Anmelde-Stufe erreichbar sind
+const STAGE_PAGE = { pw: '/anmelden/passwort', enroll: '/anmelden/einrichten-2fa', mfa: '/anmelden/code' }
 
 export function createApp () {
   const app = express()
   app.disable('x-powered-by')
-  app.set('trust proxy', false)
+  // Hinter Nginx Proxy Manager: echte Besucher-IP und HTTPS nur von Proxys aus dem eigenen Netz übernehmen
+  app.set('trust proxy', 'loopback, uniquelocal')
 
   app.use((req, res, next) => {
     res.set({
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; object-src 'none'",
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'same-origin',
-      'X-Frame-Options': 'DENY',
+      'X-Frame-Options': 'SAMEORIGIN',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
       'Cache-Control': 'no-store'
     })
+    if (req.secure) res.set('Strict-Transport-Security', 'max-age=31536000')
+    noteVisitor(req)
     next()
   })
 
   app.get('/health', (req, res) => res.json({ ok: true, id: 'mail-sortierer' }))
+  // robots.txt mit Köder: wer die verbotene Adresse trotzdem aufruft, ist ein Bot
+  app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /intern/\nDisallow: /\n'))
+
+  // Angriffsschutz: gesperrte IPs abweisen, Fallen und Angriffsmuster erkennen (angemeldete Nutzer werden nicht geprüft)
+  app.use(shield.middleware('app', {
+    extraTraps: [
+      { re: /^\/intern\/sicherung(\/|$)/i, kind: 'robots', detail: 'robots.txt-Köder' },
+      { re: /^\/intern\/kontakt(\/|$)/i, kind: 'link', detail: 'unsichtbarer Link' }
+    ],
+    skip: (req) => { const s = sessionFor(cookie(req, COOKIE)); return !!(s && s.stage === 'full') },
+    blocked: (req, res, b) => res.status(403).type('text/plain; charset=utf-8').send(`Zugriff vorübergehend gesperrt (bis ${new Date(b.until).toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}).`)
+  }))
+
   app.use(express.static(PUBLIC, { index: false, maxAge: '1h', setHeaders: (res) => res.set('Cache-Control', 'public, max-age=3600') }))
   app.use(express.urlencoded({ extended: false, limit: '3mb', parameterLimit: 2000 }))
 
@@ -80,7 +81,7 @@ export function createApp () {
   app.use((req, res, next) => {
     const tok = cookie(req, COOKIE)
     req.session = sessionFor(tok)
-    if (req.session && req.session.renewed) res.append('Set-Cookie', sessionCookie(tok, true))
+    if (req.session && req.session.renewed) res.append('Set-Cookie', sessionCookie(tok, true, req.secure))
     if (req.method === 'POST') {
       const origin = req.headers.origin
       if (origin && origin !== 'null') {
@@ -99,64 +100,30 @@ export function createApp () {
     next()
   })
 
-  const flash = (req) => ({ msg: req.query.ok, err: req.query.fehler })
+  registerLogin(app)
 
-  // --- Ersteinrichtung & Anmeldung ---
-  app.get('/einrichten', (req, res) => {
-    if (hasUsers()) return res.redirect('/anmelden')
-    res.send(page({
-      title: 'Einrichten', ...flash(req),
-      body: `<section class="card narrow"><h1>Willkommen</h1>
-      <p>Lege das Konto für die Oberfläche an. Es gibt nur dieses eine Konto.</p>
-      <form method="post" action="/einrichten" class="form">
-        <label>Benutzername<input name="name" required maxlength="40" autocomplete="username"></label>
-        <label>Passwort (mind. 10 Zeichen)<input name="pw" type="password" required minlength="10" autocomplete="new-password"></label>
-        <label>Passwort wiederholen<input name="pw2" type="password" required minlength="10" autocomplete="new-password"></label>
-        <button class="btn primary">Konto anlegen</button></form></section>`
-    }))
-  })
-  app.post('/einrichten', async (req, res) => {
-    if (hasUsers()) return res.redirect('/anmelden')
-    const name = String(req.body.name || '').trim().slice(0, 40)
-    if (!name) return back(res, '/einrichten', { err: 'Benutzername fehlt.' })
-    if (String(req.body.pw || '').length < 10) return back(res, '/einrichten', { err: 'Passwort zu kurz (mind. 10 Zeichen).' })
-    if (req.body.pw !== req.body.pw2) return back(res, '/einrichten', { err: 'Die Passwörter stimmen nicht überein.' })
-    await createUser(name, req.body.pw)
-    log('info', `Konto „${name}“ angelegt`)
-    back(res, '/anmelden', { msg: 'Konto angelegt – bitte anmelden.' })
-  })
-
-  app.get('/anmelden', (req, res) => {
-    if (!hasUsers()) return res.redirect('/einrichten')
-    if (req.session) return res.redirect('/')
-    res.send(page({
-      title: 'Anmelden', ...flash(req),
-      body: `<section class="card narrow"><h1>Anmelden</h1>
-      <form method="post" action="/anmelden" class="form">
-        <label>Benutzername<input name="name" required autocomplete="username" autofocus></label>
-        <label>Passwort<input name="pw" type="password" required autocomplete="current-password"></label>
-        <label class="check"><input type="checkbox" name="bleiben" value="1" checked> Angemeldet bleiben (30 Tage)</label>
-        <button class="btn primary">Anmelden</button></form></section>`
-    }))
-  })
-  app.post('/anmelden', async (req, res) => {
-    const r = await login(String(req.body.name || '').trim(), String(req.body.pw || ''), req.socket.remoteAddress || '', req.body.bleiben === '1')
-    if (r.error) return back(res, '/anmelden', { err: r.error })
-    res.set('Set-Cookie', sessionCookie(r.token, r.remember))
-    res.redirect(303, '/')
-  })
-  app.post('/abmelden', (req, res) => {
-    logout(cookie(req, COOKIE))
-    res.set('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
-    res.redirect(303, '/anmelden')
-  })
-
-  // Ab hier nur angemeldet
+  // Ab hier nur vollständig angemeldet (Passwort + 2FA). Alles läuft im Kontext des Nutzers (eigene Datenbank).
   app.use((req, res, next) => {
     if (!hasUsers()) return res.redirect('/einrichten')
-    if (!req.session) return req.method === 'GET' ? res.redirect('/anmelden') : res.status(401).send('Bitte anmelden')
-    next()
+    const s = req.session
+    if (!s) return req.method === 'GET' ? res.redirect('/anmelden') : res.status(401).send('Bitte anmelden')
+    if (s.stage !== 'full') return req.method === 'GET' ? res.redirect(STAGE_PAGE[s.stage] || '/anmelden') : res.status(401).send('Bitte Anmeldung abschließen')
+    const user = getUser(s.userId)
+    if (!user) return res.redirect('/anmelden')
+    s.features = featuresOf(user)
+    s.home = isHome(req)
+    withUser(user, next)
   })
+
+  registerAdmin(app)
+
+  // Bereiche, die der Verwalter nicht freigegeben hat, sind gesperrt
+  const needFeature = (f, label) => (req, res, next) => req.session.features[f] ? next() : res.status(403).send(page({ title: 'Nicht freigegeben', body: `<h1>Nicht freigegeben</h1><p>${esc(label)} ist für dein Konto nicht freigegeben. Frag den Verwalter.</p><p><a href="/">Zur Übersicht</a></p>`, session: req.session }))
+  app.use('/rechnungen', needFeature('invoices', 'Der Bereich Rechnungen'))
+  app.use('/einstellungen/rechnungen', needFeature('invoices', 'Der Bereich Rechnungen'))
+  app.use('/einstellungen/aufraeumen', needFeature('cleanup', 'Das Aufräumen'))
+  app.use('/einstellungen/ordner', needFeature('folders', 'Das Bearbeiten der Ordner'))
+  app.use('/lizenz', (req, res, next) => req.session.admin ? next() : res.status(403).send('Nur für den Verwalter'))
 
   // --- Übersicht ---
   app.get('/', (req, res) => {
@@ -174,22 +141,22 @@ export function createApp () {
     const checkInv = db.prepare("SELECT COUNT(*) n FROM invoices WHERE status IN ('open','error') AND suggestion = 'check'").get().n
     const sus = db.prepare("SELECT COUNT(*) n FROM mails WHERE decision = 'verdacht' AND created_at >= ?").get(new Date(Date.now() - 7 * 864e5).toISOString()).n
     const spamN = db.prepare("SELECT COUNT(*) n FROM mails WHERE decision = 'spam' AND created_at >= ?").get(new Date(Date.now() - 7 * 864e5).toISOString()).n
-    const target = collecting(cfg)
     const s = req.session
+    const target = collecting(cfg)
     const anyLive = accounts.some(a => a.mode === 'live')
     const steps = [
       [accounts.length > 0, 'Postfächer eintragen und testen', '/einstellungen#postfaecher'],
-      [!!st.lastOk, 'Ollama testen und ersten Durchlauf starten', '/einstellungen#ki'],
-      [!!target, 'Sammel-Postfach für Rechnungen wählen (rechnung@…)', '/einstellungen#rechnungen'],
+      ...(s.admin ? [[!!st.lastOk, 'Gemeinsame KI (Ollama) testen und ersten Durchlauf starten', '/verwaltung/ki']] : [[!!st.lastOk, 'Ersten Durchlauf starten', '#durchlauf']]),
+      ...(s.features.invoices ? [[!!target, 'Sammel-Postfach für Rechnungen wählen (rechnung@…)', '/einstellungen#rechnungen']] : []),
       [(counts.planned || 0) + (counts.moved || 0) > 0, 'Vorschläge im Probelauf ansehen und korrigieren', '/mails?status=planned'],
       [anyLive, 'Postfächer scharf schalten – dann wird wirklich verschoben', '#postfaecher']
     ]
     const L = licenseState()
     const body = `
     <h1>Übersicht</h1>
-    ${!L.exempt && (L.warn || !L.full) ? `<div class="alert ${L.full ? 'ok' : 'bad'}">${esc(L.message)} <a href="/einstellungen#lizenz">Lizenz</a></div>` : ''}
+    ${!L.exempt && (L.warn || !L.full) && s.admin ? `<div class="alert ${L.full ? 'ok' : 'bad'}">${esc(L.message)} <a href="/einstellungen#lizenz">Lizenz</a></div>` : ''}
     ${steps.every(x => x[0]) ? '' : `<section class="card"><h2>Erste Schritte</h2><ol class="steps">${steps.map(([done, text, href]) => `<li class="${done ? 'done' : ''}"><a href="${href}">${esc(text)}</a></li>`).join('')}</ol></section>`}
-    ${openInv ? `<section class="card"><h2>Rechnungen</h2><p><b>${openInv}</b> offene Rechnung(en) warten auf „Zur Buchhaltung“ oder „Privat“${checkInv ? `, davon <b>${checkInv}</b> zum Prüfen (Firma oder privat?)` : ''}.</p><a class="btn primary" href="/rechnungen">Rechnungen ansehen</a></section>` : ''}
+    ${openInv && s.features.invoices ? `<section class="card"><h2>Rechnungen</h2><p><b>${openInv}</b> offene Rechnung(en) warten auf „Zur Buchhaltung“ oder „Privat“${checkInv ? `, davon <b>${checkInv}</b> zum Prüfen (Firma oder privat?)` : ''}.</p><a class="btn primary" href="/rechnungen">Rechnungen ansehen</a></section>` : ''}
     ${sus || spamN ? `<section class="card"><h2>Sicherheit (7 Tage)</h2><p>${sus ? `<b>${sus}</b> verdächtige Mail(s) nach „${esc(targetLabel('verdacht', cfg))}“ verschoben. ` : ''}${spamN ? `<b>${spamN}</b> Spam-Mail(s) aussortiert.` : ''}</p>
       <div class="row wrap">${sus ? '<a class="btn" href="/mails?ordner=verdacht">Verdacht ansehen</a>' : ''}${spamN ? '<a class="btn" href="/mails?ordner=spam">Spam ansehen</a>' : ''}</div></section>` : ''}
     <section class="card" id="postfaecher"><h2>Postfächer</h2>
@@ -208,7 +175,7 @@ export function createApp () {
       <a class="btn" href="/einstellungen#postfaecher">Postfächer verwalten</a>
     </section>
     <div class="grid">
-      <section class="card"><h2>Letzter Durchlauf</h2>
+      <section class="card" id="durchlauf"><h2>Letzter Durchlauf</h2>
         ${isRunning() || st.running ? '<p class="pill info">läuft gerade …</p>' : ''}
         ${st.lastError ? `<div class="alert bad">${esc(st.lastError)}</div>` : ''}
         <dl class="facts">
@@ -685,7 +652,7 @@ export function createApp () {
         <div class="row span"><button class="btn primary">Speichern</button></div>
       </form></section>
 
-    ${licSection()}
+    ${s.admin ? licSection() : ''}
 
     <section class="card" id="postfaecher"><h2>Postfächer</h2>
       <p class="muted">Alle Postfächer, die sortiert werden sollen (Zugangsdaten wie in Outlook). Passwörter werden verschlüsselt gespeichert und nie angezeigt. Gelerntes gilt für alle Postfächer.</p>
@@ -697,7 +664,7 @@ export function createApp () {
       <details class="acc"${accounts.length ? '' : ' open'}><summary><b>+ Postfach hinzufügen</b></summary>${accountForm(null)}</details>
     </section>
 
-    <section class="card" id="rechnungen"><h2>Rechnungen</h2>
+    ${!s.features.invoices ? '' : `<section class="card" id="rechnungen"><h2>Rechnungen</h2>
       <p class="muted">Rechnungen aus allen Postfächern werden im Sammel-Postfach nach Jahr und Monat abgelegt (z. B. „${esc(cfg.invoices.root)}/2026/2026-11“). Aus anderen Postfächern kommt eine Kopie, das Original wandert dort nach „Sortiert/Rechnungen“. Offene Rechnungen bekommen in Outlook ein Fähnchen.</p>
       <form method="post" action="/einstellungen/rechnungen" class="form two">${csrf(s)}
         <label>Sammel-Postfach<select name="accountId"><option value="0">– Rechnungen nicht sammeln –</option>${options(accounts.map(a => [a.id, accountLabel(a) + ' (' + a.user + ')']), cfg.invoices.accountId)}</select></label>
@@ -708,30 +675,29 @@ export function createApp () {
         <label class="check span"><input type="checkbox" name="flagOpen" value="1"${chk(cfg.invoices.flagOpen)}> Offene Rechnungen in Outlook mit Fähnchen markieren</label>
         <label>Zu Lexware prüfen ab Jahr<input name="fromYear" type="number" min="0" max="2100" value="${cfg.invoices.fromYear || ''}" placeholder="alle Jahre"></label>
         <p class="muted small">Ältere Jahre sind erledigt: Rechnungen daraus werden weiter nach Jahr/Monat abgelegt, aber ohne Fähnchen und ohne „Ab zu Lexware“ (Status „Jahr abgeschlossen“).</p>
-        <label class="check"><input type="checkbox" name="scanEnabled" value="1"${chk(cfg.invoices.scanEnabled)}> Scanner-Ordner abholen</label>
+        ${!s.features.scan ? '' : `<label class="check"><input type="checkbox" name="scanEnabled" value="1"${chk(cfg.invoices.scanEnabled)}> Scanner-Ordner abholen</label>
         ${PLATFORM === 'windows' ? `<label>Scanner-Ordner<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="260" placeholder="z. B. C:\\Scans oder \\\\NAS\\scan"></label>
         <label>Benutzer für die Netzwerkfreigabe (nur bei \\\\…)<input name="scanUser" value="${esc(cfg.invoices.scanUser)}" maxlength="120" autocomplete="off"></label>
         <label>Passwort der Freigabe${hasSecret('scanPassword') ? ' <span class="pill good">gespeichert</span>' : ''}<input name="scanPass" type="password" autocomplete="new-password" placeholder="${hasSecret('scanPassword') ? 'leer lassen = unverändert' : ''}"></label>
         <p class="muted small span">Den Ordner, in den dein Scanner die PDFs legt (gleicher Pfad wie im Explorer). Der Mail-Sortierer läuft als Windows-Dienst: Laufwerksbuchstaben wie <code>S:</code> sieht er nicht – für Netzwerkordner den vollen Pfad <code>\\\\Server\\Freigabe</code> mit Benutzer und Passwort angeben. Verarbeitete Dateien wandern nach <code>erledigt\\JJJJ-MM</code> – gelöscht wird nichts.</p>`
           : `<label>Scanner-Ordner (im Container)<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="200"></label>
         <p class="muted small span">Der Scanner legt PDFs in eine Freigabe, die beim Container als <code>/scan</code> eingebunden ist. Verarbeitete Dateien wandern nach <code>erledigt/JJJJ-MM</code>, doppelte nach <code>erledigt/doppelt</code> – gelöscht wird nichts. Scans werden nur abgeholt, wenn das Sammel-Postfach scharf ist.</p>`}
-        <div class="row span"><button class="btn" name="next" value="scantest">Speichern &amp; Ordner prüfen</button></div>
-        <label>Lexware-API-Schlüssel${hasSecret('lexwareKey') ? ' <span class="pill good">gespeichert</span>' : ''}<input name="lexwareKey" type="password" autocomplete="new-password" placeholder="${hasSecret('lexwareKey') ? 'leer lassen = unverändert' : 'Schlüssel aus Lexware Office'}"></label>
+        <div class="row span"><button class="btn" name="next" value="scantest">Speichern &amp; Ordner prüfen</button></div>`}
+        ${!s.features.lexware ? '' : `<label>Lexware-API-Schlüssel${hasSecret('lexwareKey') ? ' <span class="pill good">gespeichert</span>' : ''}<input name="lexwareKey" type="password" autocomplete="new-password" placeholder="${hasSecret('lexwareKey') ? 'leer lassen = unverändert' : 'Schlüssel aus Lexware Office'}"></label>
         <label>Lexware-Adresse<input name="lexwareUrl" value="${esc(cfg.invoices.lexwareUrl)}" maxlength="200"></label>
-        <p class="muted small span">Eigenen Schlüssel anlegen (Lexware Office → Erweiterungen → Public API) mit möglichst wenigen Rechten: <b>Dateien/Belegbilder hochladen</b> und <b>Profil lesen</b>. „Zur Buchhaltung“ legt die Rechnung in Lexware unter „Belege zu prüfen“ ab.</p>
-        <div class="row span"><button class="btn primary" name="next" value="save">Speichern</button><button class="btn" name="next" value="test">Speichern &amp; Lexware testen</button></div>
-      </form></section>
+        <p class="muted small span">Eigenen Schlüssel anlegen (Lexware Office → Erweiterungen → Public API) mit möglichst wenigen Rechten: <b>Dateien/Belegbilder hochladen</b> und <b>Profil lesen</b>. „Zur Buchhaltung“ legt die Rechnung in Lexware unter „Belege zu prüfen“ ab.</p>`}
+        <div class="row span"><button class="btn primary" name="next" value="save">Speichern</button>${s.features.lexware ? '<button class="btn" name="next" value="test">Speichern &amp; Lexware testen</button>' : ''}</div>
+      </form></section>`}
 
-    <section class="card" id="ki"><h2>Lokale KI (Ollama)</h2>
-      <p class="muted">Die KI läuft bei dir – nichts geht ins Internet. ${PLATFORM === 'windows' ? 'Dafür „Ollama für Windows“ von ollama.com installieren (läuft dann unter <code>http://localhost:11434</code>) oder die Adresse eines Ollama-Servers im Netzwerk eintragen.' : 'Ollama-Adresse z. B. <code>http://&lt;Server-IP&gt;:11434</code>.'} Empfohlen mit Grafikkarte ab 6 GB: <code>qwen2.5:7b</code>; kleinere Karte oder ohne Grafikkarte: <code>qwen2.5:3b</code>. Modell vorher laden (<code>ollama pull qwen2.5:7b</code>).</p>
-      <form method="post" action="/einstellungen/ki" class="form two">${csrf(s)}
-        <label>Ollama-Adresse<input name="url" value="${esc(cfg.ollama.url)}" maxlength="200"></label>
-        <label>Modell<input name="model" value="${esc(cfg.ollama.model)}" list="modelle" maxlength="100"><datalist id="modelle">${models.map(m => `<option value="${esc(m)}">`).join('')}</datalist></label>
-        <label>Wartezeit je Mail (Sekunden)<input name="timeoutSec" type="number" value="${esc(cfg.ollama.timeoutSec)}" min="10" max="900"></label>
-        <label>Kontextgröße (Tokens)<input name="numCtx" type="number" value="${esc(cfg.ollama.numCtx)}" min="1024" max="32768" step="512"></label>
-        <div class="row span"><button class="btn primary" name="next" value="save">Speichern</button><button class="btn" name="next" value="test">Speichern &amp; testen</button></div>
-      </form>
-      ${models.length ? `<p class="small">Gefundene Modelle: ${models.map(esc).join(', ')}</p>` : ''}</section>
+
+    <section class="card" id="sortieren"><h2>Sortieren</h2>
+      <form method="post" action="/einstellungen/sortieren" class="form">${csrf(s)}
+        <label class="check"><input type="checkbox" name="onlySeen" value="1"${chk(cfg.sorting.onlySeen)}> <span><b>Nur gelesene Mails einsortieren</b> – ungelesene bleiben im Posteingang, bis du sie gelesen hast. Auf Gefahr geprüft werden sie trotzdem sofort.</span></label>
+        <p class="muted small">Gefährliche Mails (Phishing, Betrug, gefährliche Anhänge):</p>
+        <label class="check"><input type="radio" name="danger" value="mark"${cfg.sorting.danger === 'mark' ? ' checked' : ''}> <span><b>Nur markieren</b> – bleiben im Posteingang, bekommen ein Fähnchen und das Schlagwort „Phishing“. Nichts verschwindet.</span></label>
+        <label class="check"><input type="radio" name="danger" value="move"${cfg.sorting.danger !== 'mark' ? ' checked' : ''}> <span><b>Markieren und verschieben</b> nach „${esc(targetLabel('verdacht', cfg))}“.</span></label>
+        <div class="row"><button class="btn primary">Speichern</button></div>
+      </form></section>
 
     <section class="card" id="ablauf"><h2>Ablauf</h2>
       <form method="post" action="/einstellungen/ablauf" class="form two">${csrf(s)}
@@ -749,7 +715,8 @@ export function createApp () {
         <div class="row span"><button class="btn primary">Speichern</button></div>
       </form></section>
 
-    <section class="card" id="ordner"><h2>Ordner</h2>
+    ${!s.features.folders ? `<section class="card" id="ordner"><h2>Ordner</h2><p class="muted">Die Mails werden in diese Ordner unter „${esc(cfg.root)}“ sortiert. Ändern kann sie der Verwalter.</p>
+      <ul>${activeCategories(cfg).map(c => `<li><b>${esc(c.name)}</b> <span class="muted small">${esc(c.desc)}</span></li>`).join('')}</ul></section>` : `<section class="card" id="ordner"><h2>Ordner</h2>
       <p class="muted">Die Ordner liegen unter „${esc(cfg.root)}“ in jedem Postfach und erscheinen in Outlook. Die Beschreibung ist das, was die KI über den Ordner weiß – je genauer, desto besser. Wird ein Name geändert, legt der Sortierer einen neuen Ordner an; der alte bleibt (in Outlook umbenennen oder löschen).</p>
       <form method="post" action="/einstellungen/ordner" class="form">${csrf(s)}
         <label>Hauptordner<input name="root" value="${esc(cfg.root)}" maxlength="60" required></label>
@@ -766,7 +733,7 @@ export function createApp () {
         <label>Name<input name="name" maxlength="60" required placeholder="z. B. Ausmisten – Gewinnspiele"></label>
         <label class="span">Was gehört hier rein? (für die KI)<textarea name="desc" rows="2" maxlength="600" required placeholder="z. B. Gewinnspiele, Verlosungen, „Sie haben gewonnen“-Mails"></textarea></label>
         <div class="row span"><button class="btn primary">Anlegen</button></div>
-      </form></section>
+      </form></section>`}
 
     <section class="card" id="sicherheit"><h2>Sicherheit</h2>
       <p class="muted">Jede Mail wird vor allem anderen geprüft: gefährliche Anhänge (Programme, Makros, getarnte Dateien, Archive mit Passwort), PDFs mit Skripten, gefälschte Absender und Links, nachgemachte Domains, Druck plus Passwortabfrage, Absender-Prüfung des Mailservers (SPF/DKIM/DMARC). Anhänge werden dabei nie geöffnet. Verdächtige Mails kommen nach „${esc(targetLabel('verdacht', cfg))}“, Spam nach „${esc(targetLabel('spam', cfg))}“ – gelöscht wird nichts.</p>
@@ -785,7 +752,7 @@ export function createApp () {
         <p class="muted small span">Spamhaus und SURBL sind für kleine Mengen kostenlos. Fehlalarm? In der Mailliste „ist harmlos“ klicken oder die Mail in Outlook aus dem Ordner ziehen – der Absender gilt dann als vertrauenswürdig.</p>
         <div class="row span"><button class="btn primary">Speichern</button><button class="btn" name="next" value="test">Speichern &amp; Sperrlisten testen</button></div>
       </form>
-      ${(() => { const cc = cleanupCfg(cfg); return `<h3 id="aufraeumen">Spam und Verdacht aufräumen</h3>
+      ${!s.features.cleanup ? '' : (() => { const cc = cleanupCfg(cfg); return `<h3 id="aufraeumen">Spam und Verdacht aufräumen</h3>
       <p class="muted">Standard: nie. Gezählt wird ab dem Tag, an dem die Mail im Ordner liegt – du hast also immer die volle Frist zum Nachsehen. Mails mit Fähnchen bleiben. Gilt nur für scharf geschaltete Postfächer.</p>
       <form method="post" action="/einstellungen/aufraeumen" class="form two">${csrf(s)}
         <label>„${esc(targetLabel('spam', cfg))}“ aufräumen nach … Tagen (0 = nie)<input name="spam" type="number" min="0" max="3650" value="${cc.spam}"></label>
@@ -798,11 +765,22 @@ export function createApp () {
       </form>` })()}</section>
 
     <section class="card" id="konto"><h2>Konto</h2>
+      <p>Angemeldet als <b>${esc(s.display)}</b> (${esc(s.name)})${s.admin ? ' · Verwalter' : ''}.</p>
+      <h3>Passwort ändern</h3>
       <form method="post" action="/einstellungen/passwort" class="form two">${csrf(s)}
+        <input type="text" name="username" value="${esc(s.name)}" autocomplete="username" hidden>
         <label>Aktuelles Passwort<input name="old" type="password" required autocomplete="current-password"></label>
         <label>Neues Passwort (mind. 10 Zeichen)<input name="pw" type="password" required minlength="10" autocomplete="new-password"></label>
         <div class="row span"><button class="btn">Passwort ändern</button></div>
-      </form></section>`
+        <p class="muted small span">Alle anderen Geräte werden dabei abgemeldet, dieses bleibt angemeldet.</p>
+      </form>
+      <h3>Zwei-Faktor-Anmeldung</h3>
+      <p><span class="pill good">aktiv</span> Noch <b>${recoveryLeft(s.userId)}</b> von 10 Notfallcodes übrig.</p>
+      <form method="post" action="/einstellungen/notfallcodes" class="row wrap">${csrf(s)}
+        <input name="code" inputmode="numeric" maxlength="20" required placeholder="Code aus der App" autocomplete="one-time-code">
+        <button class="btn" data-confirm="Neue Notfallcodes erzeugen? Die alten gelten dann nicht mehr.">Neue Notfallcodes erzeugen</button></form>
+      <p class="muted small">Neues Handy? Bitte den Verwalter, deine Zwei-Faktor-Anmeldung zurückzusetzen – dann richtest du die App bei der nächsten Anmeldung neu ein.</p>
+      <form method="post" action="/abmelden">${csrf(s)}<button class="btn ghost">Abmelden</button></form></section>`
     res.send(page({ title: 'Einstellungen', body, session: s, path: '/einstellungen', ...flash(req) }))
   })
 
@@ -884,35 +862,13 @@ export function createApp () {
     try { const name = await lexwareTest(); back(res, '/einstellungen#rechnungen', { msg: `Lexware Office verbunden: ${name}` }) } catch (e) { back(res, '/einstellungen#rechnungen', { err: 'Lexware-Test fehlgeschlagen: ' + errText(e) }) }
   })
 
-  app.post('/einstellungen/ki', async (req, res) => {
-    const b = req.body
-    const cfg = saveConfig({ ollama: {
-      url: String(b.url || '').trim().slice(0, 200),
-      model: String(b.model || '').trim().slice(0, 100),
-      timeoutSec: int(b.timeoutSec, 10, 900, 120),
-      numCtx: int(b.numCtx, 1024, 32768, 4096)
-    } })
-    if (b.next !== 'test') return back(res, '/einstellungen#ki', { msg: 'Gespeichert.' })
-    let models = []
-    try {
-      models = await listModels(cfg)
-      const names = models.map(m => m.name)
-      if (!names.some(n => n === cfg.ollama.model || n === cfg.ollama.model + ':latest')) {
-        return back(res, `/einstellungen?modelle=${encodeURIComponent(names.join(','))}#ki`, { err: `Ollama erreichbar, aber Modell „${cfg.ollama.model}“ ist nicht geladen. Auf dem Server: ollama pull ${cfg.ollama.model}` })
-      }
-      const t0 = Date.now()
-      const d = await classify({
-        msgid: 'test', from_addr: 'versand@paketdienst.example', from_name: 'Paketdienst', domain: 'paketdienst.example',
-        subject: 'Ihre Sendung 00340434161094042557 ist unterwegs', hints: 'Absender ist eine automatische Adresse',
-        snippet: 'Guten Tag, Ihre Sendung wurde heute an uns übergeben und wird voraussichtlich morgen zugestellt. Sendung verfolgen: …'
-      }, { ...cfg, maxExamples: 0 })
-      const ms = Date.now() - t0
-      back(res, `/einstellungen?modelle=${encodeURIComponent(names.join(','))}#ki`, { msg: `KI antwortet in ${(ms / 1000).toFixed(1)} s. Testmail (Paketbenachrichtigung) → „${targetLabel(d.decision, cfg)}“ (${d.confidence} %): ${d.reason}` })
-    } catch (e) {
-      back(res, `/einstellungen?modelle=${encodeURIComponent(models.map(m => m.name).join(','))}#ki`, { err: 'KI-Test fehlgeschlagen: ' + errText(e) })
-    }
-  })
+  app.post('/einstellungen/ki', (req, res) => res.redirect(303, '/verwaltung/ki'))
 
+  app.post('/einstellungen/sortieren', (req, res) => {
+    saveConfig({ sorting: { onlySeen: req.body.onlySeen === '1', danger: req.body.danger === 'mark' ? 'mark' : 'move' } })
+    log('info', `Sortieren: ${req.body.onlySeen === '1' ? 'nur gelesene Mails' : 'alle Mails'}, gefährliche Mails ${req.body.danger === 'mark' ? 'nur markieren' : 'verschieben'}`)
+    back(res, '/einstellungen#sortieren', { msg: 'Gespeichert.' })
+  })
   app.post('/einstellungen/ablauf', (req, res) => {
     const b = req.body
     const d = DEFAULT_CONFIG
@@ -1005,12 +961,23 @@ export function createApp () {
   })
 
   app.post('/einstellungen/passwort', async (req, res) => {
-    const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId)
+    const u = getUser(req.session.userId)
     if (!u || !(await verifyPassword(String(req.body.old || ''), u.hash))) return back(res, '/einstellungen#konto', { err: 'Aktuelles Passwort falsch.' })
-    if (String(req.body.pw || '').length < 10) return back(res, '/einstellungen#konto', { err: 'Neues Passwort zu kurz.' })
-    await changePassword(u.id, String(req.body.pw))
-    res.set('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`)
-    back(res, '/anmelden', { msg: 'Passwort geändert – bitte neu anmelden.' })
+    try { await changePassword(u.id, String(req.body.pw || ''), req.session.tokenHash) } catch (e) { return back(res, '/einstellungen#konto', { err: errText(e) }) }
+    back(res, '/einstellungen#konto', { msg: 'Passwort geändert – andere Geräte sind abgemeldet.' })
+  })
+  app.post('/einstellungen/notfallcodes', (req, res) => {
+    const r = checkSecondFactor(req.session, req.body.code, { stepup: true })
+    if (r.error === 'gone') return res.redirect(303, '/anmelden')
+    if (r.error) return back(res, '/einstellungen#konto', { err: r.error })
+    const codes = regenerateRecovery(req.session.userId)
+    log('info', 'Neue Notfallcodes erzeugt')
+    res.send(page({
+      title: 'Notfallcodes', session: req.session, path: '/einstellungen',
+      body: `<section class="card narrow"><h1>Neue Notfallcodes</h1><p>Die alten gelten nicht mehr. <b>Jetzt ausdrucken oder abschreiben</b> – sie werden nur dieses eine Mal angezeigt.</p>
+      <ul class="codes">${codes.map(c => `<li class="mono">${esc(c)}</li>`).join('')}</ul>
+      <div class="row wrap"><button class="btn" data-print>Drucken</button><a class="btn primary" href="/einstellungen#konto">Fertig</a></div></section>`
+    }))
   })
 
   app.use((req, res) => res.status(404).send(page({ title: 'Nicht gefunden', body: '<h1>Nicht gefunden</h1><p><a href="/">Zur Übersicht</a></p>', session: req.session })))

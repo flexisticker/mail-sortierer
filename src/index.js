@@ -5,6 +5,7 @@ import { createApp } from './web.js'
 import { startScheduler } from './worker.js'
 import { log } from './db.js'
 import { VERSION } from './html.js'
+import { startUpdateCheck } from './updates.js'
 
 const PORT = Number(process.env.PORT) || 8080
 
@@ -26,6 +27,7 @@ const app = createApp()
 app.listen(PORT, () => {
   log('info', `Mail-Sortierer ${VERSION} gestartet (Port ${PORT})`)
   startScheduler()
+  startUpdateCheck()
   // Lizenz bei der Vedly-Zentrale erneuern (prüft selbst, ob es nach 7 Tagen wieder nötig ist)
   const tick = () => { if (!isExempt()) checkin().catch(() => {}) }
   setTimeout(tick, 20000).unref()

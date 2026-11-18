@@ -1,6 +1,7 @@
 // Der eigentliche Durchlauf je Postfach: Korrekturen erkennen → Posteingang einordnen → (scharf) verschieben.
 // Danach: Scanner-Ordner. Rechnungen landen gesammelt im Sammel-Postfach (invoice.js).
-import { db, now, kvGet, kvSet, log, prune } from './db.js'
+import { db, now, kvGet, kvSet, log, prune, withUser, currentUser } from './db.js'
+import { activeUsers } from './auth.js'
 import { getConfig, activeCategories, categoryById, isNight, targetLabel } from './config.js'
 import { enabledAccounts, getAccount, accountLabel, migrateAccounts } from './accounts.js'
 import { connect, withClient, ensureFolders, categoryPath, pathString, readMessages, readIds, moveMessage, findByMsgId, listFolders } from './imap.js'
@@ -12,8 +13,9 @@ import { licensedFull } from './license.js'
 import { cleanupAccount } from './cleanup.js'
 
 const MAX_RUN_MS = 20 * 60 * 1000
-const byMsgid = db.prepare('SELECT * FROM mails WHERE account_id = ? AND msgid = ?')
-const byId = db.prepare('SELECT * FROM mails WHERE id = ?')
+// Nicht vorab vorbereiten: `db` hängt vom Nutzer ab
+const byMsgid = { get: (acc, msgid) => db.prepare('SELECT * FROM mails WHERE account_id = ? AND msgid = ?').get(acc, msgid) }
+const byId = { get: (id) => db.prepare('SELECT * FROM mails WHERE id = ?').get(id) }
 
 function upd (id, fields) {
   const keys = Object.keys(fields)
@@ -120,6 +122,13 @@ async function processInbox (ctx, acc, client, cfg, map, stats, started, budget)
     const baseline = bases[acc.id].uid
     const known = new Set(db.prepare("SELECT uid FROM mails WHERE account_id = ? AND folder = 'INBOX' AND uidvalidity = ?").all(acc.id, uv).map(r => r.uid))
     let todo = uids.filter(u => !known.has(u))
+    // Nur gelesene Mails einsortieren: ungelesene bleiben liegen, werden aber sofort auf Gefahr geprüft und markiert
+    if (cfg.sorting.onlySeen && todo.length) {
+      const seen = new Set((await client.search({ seen: true }, { uid: true })) || [])
+      const unseen = todo.filter(u => !seen.has(u))
+      todo = todo.filter(u => seen.has(u))
+      await checkUnseen(acc, client, cfg, uv, unseen, stats)
+    }
     if (!cfg.backlog) todo = todo.filter(u => u > baseline)
     todo.sort((a, b) => b - a)
     let left = todo.length
@@ -145,6 +154,13 @@ async function processInbox (ctx, acc, client, cfg, map, stats, started, budget)
         const d = await assess(m, cfg, stats)
         stats.read++
         if (d.decision === 'inbox') { insert(acc, m, d, 'kept', 'INBOX', uv); stats.kept++; continue }
+        // Gefährliche Mails nur markieren (Fähnchen + Schlagwort „Phishing“), im Posteingang lassen
+        if (d.decision === 'verdacht' && cfg.sorting.danger === 'mark') {
+          const r = insert(acc, m, { ...d, reason: '⚠ markiert: ' + (d.reason || '') }, 'kept', 'INBOX', uv)
+          if (acc.mode === 'live') { await markDanger(client, m.uid); upd(r.id, { moved_at: now() }) }
+          stats.kept++; stats.marked = (stats.marked || 0) + 1
+          continue
+        }
         const r = insert(acc, m, d, 'planned', 'INBOX', uv)
         if (acc.mode === 'live') await moveRecord(ctx, acc, client, r, map, stats)
         else stats.planned++
@@ -162,8 +178,8 @@ async function processInbox (ctx, acc, client, cfg, map, stats, started, budget)
   } finally { lock.release() }
 }
 
-// Sicherheitsprüfung → Spam/Verdacht, sonst normale Einordnung (Regeln, Kontakte, KI)
-async function assess (m, cfg, stats) {
+// Nur die Sicherheitsprüfung (ohne KI): liefert ein Ergebnis für Verdacht/Spam oder { pass } für die normale Einordnung
+async function securityCheck (m, cfg, stats) {
   const sec = cfg.security
   const trusted = isTrusted(m)
   const known = isKnown(m)
@@ -195,6 +211,15 @@ async function assess (m, cfg, stats) {
     if (stats) stats.spam = (stats.spam || 0) + 1
     return { decision: 'spam', source: 'security', confidence: Math.min(100, res.score), reason: top || 'Spam', risk: res.score, riskReasons: reasons }
   }
+  return { pass: true, res, reasons, trusted }
+}
+
+// Sicherheitsprüfung → Spam/Verdacht, sonst normale Einordnung (Regeln, Kontakte, KI)
+async function assess (m, cfg, stats) {
+  const sc = await securityCheck(m, cfg, stats)
+  if (!sc.pass) return sc
+  const { res, reasons, trusted } = sc
+  const sec = cfg.security
   const d = await classify(m, cfg)
   if (!trusted && d.suspicion >= 80) {
     res.score += 25; reasons.push(`KI hält die Mail für Betrug (${d.suspicion} %)`)
@@ -206,6 +231,34 @@ async function assess (m, cfg, stats) {
   return { ...d, risk: res.score, riskReasons: res.score >= Number(sec.warnThreshold || 30) ? reasons : null }
 }
 
+// Gefährliche Mail markieren: Fähnchen (Outlook, Handy) + Schlagwort „$Phishing“ (Thunderbird, Apple Mail)
+async function markDanger (client, uid) {
+  try { await client.messageFlagsAdd(String(uid), ['\\Flagged', '$Phishing'], { uid: true }) } catch {
+    await client.messageFlagsAdd(String(uid), ['\\Flagged'], { uid: true }).catch(() => {})
+  }
+}
+
+// Ungelesene Mails nur auf Gefahr prüfen (Modus „nur gelesene sortieren“) – jede nur einmal
+async function checkUnseen (acc, client, cfg, uv, unseen, stats) {
+  const all = kvGet('unseenChecked', {})
+  const st = all[acc.id] && all[acc.id].uv === uv ? all[acc.id] : { uv, max: 0 }
+  const fresh = unseen.filter(u => u > st.max).sort((a, b) => a - b).slice(-50)
+  if (!fresh.length) return
+  for (let i = 0; i < fresh.length; i += 10) {
+    for (const m of await readMessages(client, fresh.slice(i, i + 10))) {
+      const sc = await securityCheck(m, cfg, null)
+      if (!sc.pass && sc.decision === 'verdacht') {
+        if (acc.mode === 'live') await markDanger(client, m.uid)
+        stats.marked = (stats.marked || 0) + 1
+        log('warn', `${accountLabel(acc)}: ungelesene Mail von ${m.from_addr} „${m.subject}“ ${acc.mode === 'live' ? 'als gefährlich markiert' : 'wäre als gefährlich markiert worden (Probelauf)'}: ${sc.reason}`)
+      }
+    }
+  }
+  st.max = Math.max(st.max, ...fresh)
+  all[acc.id] = st
+  kvSet('unseenChecked', all)
+}
+
 async function moveRecord (ctx, acc, client, r, map, stats) {
   const dest = destPath(map, r.decision)
   if (!dest) { upd(r.id, { status: 'kept', reason: (r.reason || '') + ' (Ordner abgeschaltet)' }); return }
@@ -214,6 +267,12 @@ async function moveRecord (ctx, acc, client, r, map, stats) {
     if (!exists || !exists.length) { upd(r.id, { status: 'gone', error: 'nicht mehr im Posteingang' }); return }
     if (r.decision === 'rechnungen' && collecting()) {
       const placed = await handleMailInvoice(ctx, acc, r, client)
+      if (placed && placed.blocked && getConfig().sorting.danger === 'mark') {
+        await markDanger(client, r.uid)
+        upd(r.id, { status: 'kept', decision: 'verdacht', source: 'security', reason: '⚠ markiert: ' + placed.blocked, risk: 80, risk_reasons: JSON.stringify([placed.blocked]) })
+        stats.suspicious = (stats.suspicious || 0) + 1
+        return
+      }
       if (placed && placed.blocked) {
         const v = map.verdacht
         const newUid = await moveMessage(client, r.uid, v)
@@ -234,13 +293,17 @@ async function moveRecord (ctx, acc, client, r, map, stats) {
   }
 }
 
-let running = null
+// Je Nutzer höchstens ein Durchlauf gleichzeitig (Schlüssel = Nutzer-ID, ohne Kontext 0)
+const running = new Map()
+const uid = () => (currentUser() || {}).id || 0
 export function runOnce (why = 'Zeitplan') {
-  if (running) return running
-  running = run(why).finally(() => { running = null })
-  return running
+  const k = uid()
+  if (running.has(k)) return running.get(k)
+  const p = run(why).finally(() => running.delete(k))
+  running.set(k, p)
+  return p
 }
-export const isRunning = () => !!running
+export const isRunning = () => running.has(uid())
 
 async function run (why) {
   const cfg = getConfig()
@@ -291,7 +354,7 @@ async function run (why) {
       try { await processScans(ctx, total) } catch (e) { failed = 'Scanner: ' + e.message; log('error', failed) }
     }
     const msg = `Durchlauf (${why}): ${total.read} gelesen, ${total.moved} verschoben, ${total.planned} im Probelauf vorgemerkt, ${total.kept} bleiben im Posteingang, ${total.corrections} Korrekturen` +
-      (total.invoices ? `, ${total.invoices} Rechnungen` : '') + (total.suspicious ? `, ${total.suspicious} verdächtig` : '') + (total.spam ? `, ${total.spam} Spam` : '') + (total.scans ? `, ${total.scans} Scans` : '') + (total.deleted ? `, ${total.deleted} aufgeräumt` : '') + (total.errors ? `, ${total.errors} Fehler` : '') + (total.left > 0 ? `, ${total.left} warten noch` : '')
+      (total.invoices ? `, ${total.invoices} Rechnungen` : '') + (total.suspicious ? `, ${total.suspicious} verdächtig` : '') + (total.marked ? `, ${total.marked} als gefährlich markiert` : '') + (total.spam ? `, ${total.spam} Spam` : '') + (total.scans ? `, ${total.scans} Scans` : '') + (total.deleted ? `, ${total.deleted} aufgeräumt` : '') + (total.errors ? `, ${total.errors} Fehler` : '') + (total.left > 0 ? `, ${total.left} warten noch` : '')
     if (total.read || total.moved || total.corrections || total.errors || total.scans || total.deleted) log(total.errors ? 'warn' : 'info', msg)
     setStatus({ running: false, lastEnd: now(), lastOk: failed ? undefined : now(), lastError: failed || total.scanError || null, dnsWarning: total.dnsWarning || null, last: total, backlogLeft: total.left })
   } catch (e) {
@@ -320,6 +383,13 @@ export async function correct (id, target) {
   const base = { decision: target, source: 'correction', reason: 'korrigiert', confidence: null, error: null }
   if (rec.status === 'gone' || (rec.status === 'deleted' && !rec.folder)) { upd(id, base); return }
   const inInbox = !rec.folder || rec.folder === 'INBOX'
+  // „ist harmlos“ bei einer nur markierten Mail: Markierung im Postfach wieder entfernen
+  if (inInbox && rec.decision === 'verdacht' && rec.status === 'kept' && acc.mode === 'live' && rec.uid) {
+    await withClient(acc, async (client) => {
+      const lock = await client.getMailboxLock('INBOX')
+      try { await client.messageFlagsRemove(String(rec.uid), ['\\Flagged', '$Phishing'], { uid: true }) } catch { /* Mail inzwischen weg */ } finally { lock.release() }
+    }).catch(() => {})
+  }
   if (inInbox && (acc.mode !== 'live' || target === 'inbox')) { upd(id, { ...base, status: target === 'inbox' ? 'kept' : 'planned' }); return }
   if (inInbox && target === 'rechnungen' && collecting()) { upd(id, { ...base, status: 'planned' }); return } // nächster Durchlauf legt die Rechnung ab
   await withClient(acc, async (client) => {
@@ -387,14 +457,25 @@ export function requeueKept () {
   return Number(r.changes || 0)
 }
 
+// Zeitplan für alle Nutzer. Die KI-Anfragen laufen über eine gemeinsame Warteschlange (ollama.js),
+// darum hier nacheinander: höchstens ein Zeitplan-Durchlauf gleichzeitig.
+let scheduling = false
 export function startScheduler () {
-  migrateAccounts(getConfig())
-  setInterval(() => {
-    const cfg = getConfig()
-    if (cfg.paused || running) return
-    if (!enabledAccounts().length) return
-    const st = getStatus()
-    const last = st.lastStart ? Date.parse(st.lastStart) : 0
-    if (Date.now() - last >= Math.max(1, Number(cfg.intervalMin) || 5) * 60000) runOnce('Zeitplan')
+  for (const u of activeUsers()) withUser(u, () => migrateAccounts(getConfig()))
+  setInterval(async () => {
+    if (scheduling) return
+    scheduling = true
+    try {
+      for (const u of activeUsers()) {
+        await withUser(u, async () => {
+          const cfg = getConfig()
+          if (cfg.paused || isRunning()) return
+          if (!enabledAccounts().length) return
+          const st = getStatus()
+          const last = st.lastStart ? Date.parse(st.lastStart) : 0
+          if (Date.now() - last >= Math.max(1, Number(cfg.intervalMin) || 5) * 60000) await runOnce('Zeitplan').catch(() => {})
+        })
+      }
+    } finally { scheduling = false }
   }, 30000).unref()
 }

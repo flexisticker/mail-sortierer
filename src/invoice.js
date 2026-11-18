@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { simpleParser } from 'mailparser'
-import { db, now, log, DATA_DIR, kvGet, kvSet } from './db.js'
+import { db, now, log, dataDir, kvGet, kvSet } from './db.js'
 import { getConfig, companyList, PLATFORM } from './config.js'
 import { execFile } from 'node:child_process'
 import { pdfStreams, pdfRisk, scanAttachment } from './security.js'
@@ -15,12 +15,12 @@ import { getAccount, accountLabel } from './accounts.js'
 import { withClient, ensurePath, appendMessage, moveMessage, findByMsgId, pathString } from './imap.js'
 import { getSecret } from './secrets.js'
 
-const BELEGE = path.join(DATA_DIR, 'belege')
+const belegeDir = () => path.join(dataDir(), 'belege')
 const MAX_SOURCE = 40 * 1024 * 1024
 const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember']
 export const monthName = (ym) => { const m = Number(String(ym).slice(5, 7)); return m ? MONTHS[m - 1] : '' }
 
-const byId = db.prepare('SELECT * FROM invoices WHERE id = ?')
+const byId = { get: (id) => db.prepare('SELECT * FROM invoices WHERE id = ?').get(id) }
 export const getInvoice = (id) => byId.get(Number(id))
 
 function upd (id, f) {
@@ -268,16 +268,16 @@ const safeName = (s) => String(s || 'rechnung').normalize('NFKC').replace(/[^\w.
 
 function storeFile (buf, name, ym) {
   const hash = crypto.createHash('sha256').update(buf).digest('hex')
-  const dir = path.join(BELEGE, ym.slice(0, 4) || 'ohne-datum')
+  const dir = path.join(belegeDir(), ym.slice(0, 4) || 'ohne-datum')
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, `${hash.slice(0, 10)}-${safeName(name)}`)
   if (!fs.existsSync(file)) fs.writeFileSync(file, buf)
-  return { file: path.relative(DATA_DIR, file), hash }
+  return { file: path.relative(dataDir(), file), hash }
 }
 
 export const filePath = (rel) => {
-  const p = path.resolve(DATA_DIR, String(rel || ''))
-  return p.startsWith(BELEGE + path.sep) ? p : null
+  const p = path.resolve(dataDir(), String(rel || ''))
+  return p.startsWith(belegeDir() + path.sep) ? p : null
 }
 
 const ymOf = (date, fallback) => {
@@ -648,6 +648,7 @@ export async function lexwareTest () {
 
 export async function toAccounting (ids) {
   if (!licensedFull()) throw new Error('Ohne gültige Lizenz geht nichts an Lexware (Einstellungen → Lizenz).')
+  if (!getConfig().features.lexware) throw new Error('Lexware ist für dieses Konto nicht freigegeben.')
   const done = []; const errors = []
   const list = ids.map(getInvoice).filter(i => i && ['open', 'error', 'private', 'noinvoice'].includes(i.status))
   if (!list.length) return { done, errors }

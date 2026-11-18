@@ -6,7 +6,21 @@ function base (cfg) {
   return u
 }
 
+// Gemeinsame Warteschlange: alle Nutzer teilen sich eine KI (z. B. eine Grafikkarte) – Anfragen laufen nacheinander.
+let queue = Promise.resolve()
+let waiting = 0
+export const queueLength = () => waiting
+function serial (fn) {
+  waiting++
+  const p = queue.then(fn, fn)
+  queue = p.catch(() => {}).finally(() => { waiting-- })
+  return p
+}
+
 async function call (cfg, path, body, timeoutSec) {
+  return body ? serial(() => callNow(cfg, path, body, timeoutSec)) : callNow(cfg, path, body, timeoutSec)
+}
+async function callNow (cfg, path, body, timeoutSec) {
   const ctl = new AbortController()
   const t = setTimeout(() => ctl.abort(), (timeoutSec || 30) * 1000)
   try {

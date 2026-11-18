@@ -14,3 +14,6 @@ document.addEventListener('change', (e) => {
     r.readAsText(f, /1252|latin/i.test(f.type) ? 'windows-1252' : 'utf-8')
   }
 })
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-print]')) { e.preventDefault(); window.print() }
+})

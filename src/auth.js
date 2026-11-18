@@ -1,14 +1,26 @@
-// Anmeldung: ein Konto (Admin), scrypt 2^16 mit Salt, Sitzungen nur als SHA-256 gespeichert.
+// Anmeldung (ab 2.0 mehrere Nutzer): scrypt 2^16 mit Salt, Sitzungen nur als SHA-256, Zwei-Faktor (TOTP) Pflicht für alle.
+// Sitzungs-Stufen: pw (neues Passwort nötig) → enroll (2FA einrichten) bzw. mfa (Code eingeben) → full.
+// Alles hier liegt in der Haupt-Datenbank (sysdb), nie in den Nutzer-Datenbanken.
 import crypto from 'node:crypto'
 import { promisify } from 'node:util'
-import { db, now } from './db.js'
+import { sysdb as db, now, sysLog, dropUserData } from './db.js'
+import { encrypt, decrypt } from './secrets.js'
+import { newSecret, verifyTotp, newRecoveryCodes, useRecoveryCode, sha } from './totp.js'
 
 const scrypt = promisify(crypto.scrypt)
 const N = 2 ** 16
 const SESSION_DAYS = 30          // „Angemeldet bleiben“
 const SHORT_MS = 12 * 3600 * 1000 // ohne Haken: 12 Stunden ohne Nutzung, Cookie endet mit dem Browser
-// Spalte für „Angemeldet bleiben“ (ältere Datenbanken)
-if (!db.prepare('PRAGMA table_info(sessions)').all().some(c => c.name === 'remember')) db.exec('ALTER TABLE sessions ADD COLUMN remember INTEGER NOT NULL DEFAULT 1')
+const STAGE_MS = 15 * 60 * 1000   // bis 2FA/Passwort erledigt sind
+const STEPUP_MS = 10 * 60 * 1000  // Verwaltung von außen: Code gilt 10 Minuten
+
+// Bestand vor 2.0: das älteste Konto ist Verwalter und nutzt die Haupt-Datenbank
+;(function migrate () {
+  if (!db.prepare("SELECT 1 FROM users WHERE role = 'admin'").get()) {
+    const first = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get()
+    if (first) db.prepare("UPDATE users SET role = 'admin', data = '' WHERE id = ?").run(first.id)
+  }
+})()
 
 export async function hashPassword (pw) {
   const salt = crypto.randomBytes(16)
@@ -26,17 +38,49 @@ export async function verifyPassword (pw, stored) {
 }
 
 export const hasUsers = () => !!db.prepare('SELECT 1 FROM users LIMIT 1').get()
+export const getUser = (id) => db.prepare('SELECT * FROM users WHERE id = ?').get(Number(id))
+export const listUsers = () => db.prepare('SELECT * FROM users ORDER BY id').all()
+export const activeUsers = () => db.prepare('SELECT * FROM users WHERE disabled = 0 ORDER BY id').all()
+export const validName = (n) => /^[A-Za-z0-9ÄÖÜäöüß._@-]{2,40}$/.test(String(n || ''))
 
-export async function createUser (name, pw) {
-  db.prepare('INSERT INTO users (name, hash, created_at) VALUES (?, ?, ?)').run(name, await hashPassword(pw), now())
+// Bereiche, die der Verwalter je Nutzer an- und abschalten kann
+export const FEATURES = {
+  invoices: 'Rechnungen sammeln (Sammel-Postfach, Monatsordner)',
+  lexware: 'Rechnungen an Lexware Office übertragen',
+  scan: 'Scanner-Ordner abholen',
+  cleanup: 'Spam und Verdacht aufräumen (löschen)',
+  folders: 'Eigene Ordner anlegen und Ordner umbenennen',
+  webmail: 'Webmail (Mails lesen und schreiben)'
+}
+export const FULL_FEATURES = Object.fromEntries(Object.keys(FEATURES).map(k => [k, true]))
+export const SIMPLE_FEATURES = { invoices: false, lexware: false, scan: false, cleanup: true, folders: true, webmail: true }
+export function featuresOf (u) {
+  if (!u) return { ...FULL_FEATURES }
+  if (!u.features) return u.role === 'admin' ? { ...FULL_FEATURES } : { ...SIMPLE_FEATURES }
+  let f = {}
+  try { f = JSON.parse(u.features) } catch { f = {} }
+  return Object.fromEntries(Object.keys(FEATURES).map(k => [k, f[k] !== undefined ? !!f[k] : (u.role === 'admin' || SIMPLE_FEATURES[k])]))
 }
 
-export async function changePassword (userId, pw) {
-  db.prepare('UPDATE users SET hash = ? WHERE id = ?').run(await hashPassword(pw), userId)
-  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId)
+/** Konto anlegen. Erstes Konto = Verwalter mit Haupt-Datenbank, weitere bekommen eine eigene Datenbank. */
+export async function createUser (name, pw, { role = 'user', display = '', features = null, mustChange = false } = {}) {
+  if (!validName(name)) throw new Error('Benutzername: 2–40 Zeichen, nur Buchstaben, Ziffern und . _ - @')
+  if (db.prepare('SELECT 1 FROM users WHERE lower(name) = lower(?)').get(name)) throw new Error('Diesen Benutzernamen gibt es schon.')
+  const first = !hasUsers()
+  const r = db.prepare('INSERT INTO users (name, hash, created_at, role, display, data, features, must_change) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(name, await hashPassword(pw), now(), first ? 'admin' : (role === 'admin' ? 'admin' : 'user'), String(display || '').slice(0, 60), '',
+      features ? JSON.stringify(features) : null, mustChange ? 1 : 0)
+  const id = Number(r.lastInsertRowid)
+  if (!first) db.prepare('UPDATE users SET data = ? WHERE id = ?').run(`nutzer/${id}`, id)
+  return getUser(id)
 }
 
-const sha = (s) => crypto.createHash('sha256').update(s).digest('hex')
+export async function changePassword (userId, pw, keepTokenHash = null) {
+  if (String(pw || '').length < 10) throw new Error('Passwort zu kurz (mind. 10 Zeichen).')
+  db.prepare('UPDATE users SET hash = ?, must_change = 0 WHERE id = ?').run(await hashPassword(pw), userId)
+  if (keepTokenHash) db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(userId, keepTokenHash)
+  else db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId)
+}
 
 // Fehlversuche je IP und je Benutzername (nur im Speicher; Neustart hebt die Sperre auf)
 const fails = new Map()
@@ -48,41 +92,191 @@ function fail (key) {
   const f = fails.get(key)
   if (!f || Date.now() - f.at > 15 * 60 * 1000) fails.set(key, { count: 1, at: Date.now() })
   else { f.count++; f.at = Date.now() }
+  if (fails.size > 10000) fails.clear()
 }
+export const unlockName = (name) => fails.delete('name:' + String(name || '').toLowerCase())
+export const isLockedName = (name) => !!tooMany('name:' + String(name || '').toLowerCase())
 
 const DUMMY = 'scrypt$16$AAAAAAAAAAAAAAAAAAAAAA==$' + Buffer.alloc(64).toString('base64')
+const nextStage = (u) => u.must_change ? 'pw' : (u.totp_on ? 'mfa' : 'enroll')
 
 export async function login (name, pw, ip, remember = true) {
-  if (tooMany('ip:' + ip) || tooMany('name:' + name)) return { error: 'Zu viele Fehlversuche – bitte 15 Minuten warten.' }
-  const u = db.prepare('SELECT * FROM users WHERE name = ?').get(String(name || ''))
+  const lname = String(name || '').toLowerCase()
+  if (tooMany('ip:' + ip) || tooMany('name:' + lname)) return { error: 'Zu viele Fehlversuche – bitte 15 Minuten warten.', locked: true }
+  const u = db.prepare('SELECT * FROM users WHERE lower(name) = ?').get(lname)
   const ok = await verifyPassword(pw, u ? u.hash : DUMMY)
   if (!u || !ok) {
-    fail('ip:' + ip); fail('name:' + name)
-    return { error: 'Benutzername oder Passwort falsch.' }
+    fail('ip:' + ip); fail('name:' + lname)
+    return { error: 'Benutzername oder Passwort falsch.', failed: true }
   }
-  fails.delete('ip:' + ip); fails.delete('name:' + name)
+  if (u.disabled) return { error: 'Dieser Zugang ist gesperrt. Bitte den Verwalter fragen.' }
+  fails.delete('ip:' + ip); fails.delete('name:' + lname)
   const token = crypto.randomBytes(32).toString('base64url')
   const csrf = crypto.randomBytes(24).toString('base64url')
-  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires_at, remember) VALUES (?, ?, ?, ?, ?)')
-    .run(sha(token), u.id, csrf, Date.now() + (remember ? SESSION_DAYS * 864e5 : SHORT_MS), remember ? 1 : 0)
-  return { token, remember }
+  const stage = nextStage(u)
+  db.prepare('INSERT INTO sessions (token_hash, user_id, csrf, expires_at, remember, stage, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(sha(token), u.id, csrf, Date.now() + STAGE_MS, remember ? 1 : 0, stage, String(ip || '').slice(0, 64), now())
+  return { token, remember, stage }
 }
 
 export function sessionFor (token) {
   if (!token) return null
-  const s = db.prepare('SELECT s.*, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE token_hash = ?').get(sha(token))
+  const s = db.prepare('SELECT s.*, u.name, u.display, u.role, u.disabled, u.totp_on, u.must_change, u.notice FROM sessions s JOIN users u ON u.id = s.user_id WHERE token_hash = ?').get(sha(token))
   if (!s || s.expires_at < Date.now()) return null
-  // gleitend verlängern (bei „Angemeldet bleiben“ höchstens einmal am Tag, dann wird auch das Cookie erneuert)
-  let renewed = false
-  if (s.remember && s.expires_at - Date.now() < (SESSION_DAYS - 1) * 864e5) {
-    db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(Date.now() + SESSION_DAYS * 864e5, s.token_hash)
-    renewed = true
-  } else if (!s.remember && s.expires_at - Date.now() < SHORT_MS - 5 * 60000) {
-    db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(Date.now() + SHORT_MS, s.token_hash)
+  if (s.disabled) { db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(s.token_hash); return null }
+  let stage = s.stage
+  // 2FA ist Pflicht: Sitzungen von vor 2.0 bzw. nach „2FA zurücksetzen“ müssen sie erst einrichten
+  if (stage === 'full' && (!s.totp_on || s.must_change)) {
+    stage = s.must_change ? 'pw' : 'enroll'
+    db.prepare('UPDATE sessions SET stage = ?, expires_at = ? WHERE token_hash = ?').run(stage, Date.now() + STAGE_MS, s.token_hash)
   }
-  return { userId: s.user_id, name: s.name, csrf: s.csrf, tokenHash: s.token_hash, remember: !!s.remember, renewed }
+  let renewed = false
+  if (stage === 'full') {
+    // gleitend verlängern (bei „Angemeldet bleiben“ höchstens einmal am Tag, dann wird auch das Cookie erneuert)
+    if (s.remember && s.expires_at - Date.now() < (SESSION_DAYS - 1) * 864e5) {
+      db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(Date.now() + SESSION_DAYS * 864e5, s.token_hash)
+      renewed = true
+    } else if (!s.remember && s.expires_at - Date.now() < SHORT_MS - 5 * 60000) {
+      db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(Date.now() + SHORT_MS, s.token_hash)
+    }
+  }
+  return {
+    userId: s.user_id, name: s.name, display: s.display || s.name, role: s.role, admin: s.role === 'admin',
+    csrf: s.csrf, tokenHash: s.token_hash, remember: !!s.remember, renewed, stage, stepupAt: s.stepup_at, notice: s.notice || ''
+  }
 }
+
+/** Nächste Stufe nach erledigtem Schritt; bei „full“ gilt die normale Laufzeit (30 Tage bzw. 12 Std.) */
+function advance (session) {
+  const u = getUser(session.userId)
+  const st = u.must_change ? 'pw' : (u.totp_on ? 'full' : 'enroll')
+  const exp = st === 'full' ? Date.now() + (session.remember ? SESSION_DAYS * 864e5 : SHORT_MS) : Date.now() + STAGE_MS
+  db.prepare('UPDATE sessions SET stage = ?, expires_at = ?, tries = 0, stepup_at = ? WHERE token_hash = ?')
+    .run(st, exp, st === 'full' ? Date.now() : 0, session.tokenHash)
+  if (st === 'full') db.prepare('UPDATE users SET last_login = ?, notice = NULL WHERE id = ?').run(now(), u.id)
+  return st
+}
+
+/** Neues Passwort in der Stufe „pw“ (nach Zurücksetzen durch den Verwalter) */
+export async function setOwnPassword (session, pw) {
+  await changePassword(session.userId, pw, session.tokenHash)
+  return advance(session)
+}
+
+/** Geheimnis für die Einrichtung (bleibt gleich, bis die Einrichtung abgeschlossen ist) */
+export function enrollSecret (userId) {
+  const u = getUser(userId)
+  if (u.totp_on) return null
+  let sec = decrypt(u.totp_secret)
+  if (!sec) { sec = newSecret(); db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(encrypt(sec), userId) }
+  return sec
+}
+
+function tooManyTries (session) {
+  const n = db.prepare('UPDATE sessions SET tries = tries + 1 WHERE token_hash = ? RETURNING tries').get(session.tokenHash)
+  if (n && n.tries >= 5) { db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(session.tokenHash); return true }
+  return false
+}
+
+/** Einrichtung abschließen: erster Code aus der App → 2FA an, Notfallcodes werden einmal angezeigt */
+export function finishEnroll (session, code) {
+  const u = getUser(session.userId)
+  const sec = decrypt(u.totp_secret)
+  const step = sec ? verifyTotp(sec, code, 0) : 0
+  if (!step) return { error: tooManyTries(session) ? 'gone' : 'Der Code stimmt nicht – bitte den aktuellen Code aus der App eingeben (Uhrzeit am Handy prüfen).' }
+  const rc = newRecoveryCodes()
+  db.prepare('UPDATE users SET totp_on = 1, totp_last = ?, recovery = ? WHERE id = ?').run(step, JSON.stringify(rc.hashes), u.id)
+  sysLog('info', `${u.name}: Zwei-Faktor-Anmeldung eingerichtet`)
+  advance(session)
+  return { codes: rc.codes }
+}
+
+/** Code (oder Notfallcode) prüfen – für die Anmeldung (Stufe mfa) und für die Bestätigung vor Verwaltungsaufgaben */
+export function checkSecondFactor (session, code, { stepup = false } = {}) {
+  const u = getUser(session.userId)
+  const sec = decrypt(u.totp_secret)
+  let how = ''
+  const step = sec && u.totp_on ? verifyTotp(sec, code, u.totp_last) : 0
+  if (step) { db.prepare('UPDATE users SET totp_last = ? WHERE id = ?').run(step, u.id); how = 'app' } else {
+    let list = []
+    try { list = JSON.parse(u.recovery || '[]') } catch { list = [] }
+    const rest = useRecoveryCode(list, code)
+    if (rest) { db.prepare('UPDATE users SET recovery = ? WHERE id = ?').run(JSON.stringify(rest), u.id); how = 'notfallcode'; sysLog('warn', `${u.name}: mit Notfallcode angemeldet (${rest.length} übrig)`) }
+  }
+  if (!how) return { error: tooManyTries(session) ? 'gone' : 'Der Code stimmt nicht.' }
+  if (stepup) db.prepare('UPDATE sessions SET stepup_at = ?, tries = 0 WHERE token_hash = ?').run(Date.now(), session.tokenHash)
+  else advance(session)
+  return { ok: true, how, left: how === 'notfallcode' ? JSON.parse(getUser(u.id).recovery || '[]').length : null }
+}
+export const stepupValid = (session) => session && Date.now() - Number(session.stepupAt || 0) < STEPUP_MS
+
+/** Neue Notfallcodes (alte werden ungültig) */
+export function regenerateRecovery (userId) {
+  const rc = newRecoveryCodes()
+  db.prepare('UPDATE users SET recovery = ? WHERE id = ?').run(JSON.stringify(rc.hashes), userId)
+  return rc.codes
+}
+export const recoveryLeft = (userId) => { try { return JSON.parse(getUser(userId).recovery || '[]').length } catch { return 0 } }
 
 export function logout (token) {
   if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha(token))
+}
+
+// ---------- Verwalter: Zugang wiederherstellen ----------
+const ABC = 'abcdefghjkmnpqrstuvwxyz23456789'
+export const oneTimePassword = () => Array.from({ length: 3 }, () => Array.from(crypto.randomBytes(4), b => ABC[b % ABC.length]).join('')).join('-')
+
+export async function adminResetPassword (userId, by) {
+  const u = getUser(userId)
+  if (!u) throw new Error('Nutzer nicht gefunden.')
+  const pw = oneTimePassword()
+  db.prepare('UPDATE users SET hash = ?, must_change = 1, notice = ? WHERE id = ?').run(await hashPassword(pw), 'Dein Passwort wurde vom Verwalter zurückgesetzt. Bitte vergib jetzt ein eigenes.', u.id)
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)
+  unlockName(u.name)
+  sysLog('warn', `Verwalter ${by}: Passwort von „${u.name}“ zurückgesetzt`)
+  return pw
+}
+export function adminReset2fa (userId, by) {
+  const u = getUser(userId)
+  if (!u) throw new Error('Nutzer nicht gefunden.')
+  db.prepare('UPDATE users SET totp_on = 0, totp_secret = NULL, recovery = NULL, totp_last = 0, notice = ? WHERE id = ?')
+    .run('Deine Zwei-Faktor-Anmeldung wurde vom Verwalter zurückgesetzt. Bitte richte sie jetzt neu ein.', u.id)
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)
+  sysLog('warn', `Verwalter ${by}: Zwei-Faktor-Anmeldung von „${u.name}“ zurückgesetzt`)
+}
+export function adminLogoutAll (userId, by, exceptTokenHash = null) {
+  const u = getUser(userId)
+  if (!u) throw new Error('Nutzer nicht gefunden.')
+  const r = exceptTokenHash
+    ? db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(u.id, exceptTokenHash)
+    : db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)
+  sysLog('warn', `Verwalter ${by}: „${u.name}“ auf allen Geräten abgemeldet (${r.changes} Sitzungen)`)
+  return Number(r.changes || 0)
+}
+export function adminSetDisabled (userId, on, by) {
+  const u = getUser(userId)
+  if (!u) throw new Error('Nutzer nicht gefunden.')
+  if (on && u.role === 'admin' && db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'admin' AND disabled = 0").get().n <= 1) throw new Error('Der letzte Verwalter kann nicht gesperrt werden.')
+  db.prepare('UPDATE users SET disabled = ? WHERE id = ?').run(on ? 1 : 0, u.id)
+  if (on) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)
+  else unlockName(u.name)
+  sysLog('warn', `Verwalter ${by}: „${u.name}“ ${on ? 'gesperrt' : 'entsperrt'}`)
+}
+export function adminSetUser (userId, { display, role, features }, by) {
+  const u = getUser(userId)
+  if (!u) throw new Error('Nutzer nicht gefunden.')
+  const newRole = role === 'admin' ? 'admin' : 'user'
+  if (u.role === 'admin' && newRole !== 'admin' && db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'admin' AND disabled = 0").get().n <= 1) throw new Error('Es muss mindestens einen Verwalter geben.')
+  db.prepare('UPDATE users SET display = ?, role = ?, features = ? WHERE id = ?').run(String(display || '').slice(0, 60), newRole, JSON.stringify(features), u.id)
+  sysLog('info', `Verwalter ${by}: Einstellungen von „${u.name}“ geändert`)
+}
+export function adminDeleteUser (userId, by) {
+  const u = getUser(userId)
+  if (!u) throw new Error('Nutzer nicht gefunden.')
+  if (!u.data) throw new Error('Dieses Konto nutzt die Haupt-Datenbank und kann nicht gelöscht werden.')
+  if (u.role === 'admin' && db.prepare("SELECT COUNT(*) n FROM users WHERE role = 'admin'").get().n <= 1) throw new Error('Der letzte Verwalter kann nicht gelöscht werden.')
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)
+  db.prepare('DELETE FROM users WHERE id = ?').run(u.id)
+  dropUserData(u)
+  sysLog('warn', `Verwalter ${by}: Nutzer „${u.name}“ mit allen Daten gelöscht`)
 }

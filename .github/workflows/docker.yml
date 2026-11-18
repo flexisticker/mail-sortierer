@@ -4,6 +4,10 @@ on:
   push:
     branches: [main, 'claude/**']
   workflow_dispatch:
+  # Wöchentliche Sicherheitsprüfung (Montag 6 Uhr MEZ) mit den neuesten Lücken-Datenbanken – baut nichts,
+  # meldet nur (GitHub schickt bei Fehlschlag eine Mail an den Repo-Inhaber)
+  schedule:
+    - cron: '17 5 * * 1'
 
 permissions:
   contents: read
@@ -26,6 +30,8 @@ jobs:
           docker run --rm -v "$PWD:/repo" \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
             "$GITLEAKS" git --redact --no-banner --verbose --exit-code 1 /repo
+      - name: Angriffsschutz prüfen (keine Fehlalarme, Fallen greifen)
+        run: node scripts/shield-check.mjs
 
   security:
     runs-on: ubuntu-latest
@@ -41,9 +47,19 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
       - name: Syntax prüfen
         run: for f in src/*.js; do node --check "$f"; done
+      # Basisimage node:22-slim mit Trivy (per Digest gepinnt; die trivy-action wurde 2026 kompromittiert, darum keine Action):
+      # hoch/kritisch nur Bericht, kritisch mit verfügbarer Korrektur = Abbruch
+      - name: Basisimage node:22-slim scannen (Trivy)
+        env:
+          TRIVY: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+        run: |
+          docker pull -q node:22-slim
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" image --quiet --scanners vuln --ignore-unfixed --severity HIGH,CRITICAL --exit-code 0 node:22-slim
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" image --quiet --scanners vuln --ignore-unfixed --severity CRITICAL --exit-code 1 node:22-slim
 
   build:
     needs: [secrets, security]
+    if: ${{ github.event_name != 'schedule' && !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,6 +96,7 @@ jobs:
   # Windows-Setup (Inno Setup + WinSW-Dienst), gebaut und still getestet auf windows-latest
   windows:
     needs: [secrets, security]
+    if: ${{ github.event_name != 'schedule' && !failure() && !cancelled() }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +119,7 @@ jobs:
   # Setup als OCI-Artefakt ins (öffentliche) Paket mail-sortierer, Tag „windows“ – die Vedly-Zentrale gibt es von dort an Firmen mit Lizenz weiter
   windows-publish:
     needs: windows
+    if: ${{ github.event_name != 'schedule' && !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

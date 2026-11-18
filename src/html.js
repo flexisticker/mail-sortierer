@@ -1,21 +1,27 @@
 // Kleine HTML-Helfer für die serverseitig erzeugten Seiten (alles maskiert).
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const VERSION = process.env.APP_VERSION || '1.8.0'
+export const VERSION = process.env.APP_VERSION || '2.0.0'
 
-const NAV = [
-  ['/', 'Übersicht'],
-  ['/mails', 'Mails'],
-  ['/rechnungen', 'Rechnungen'],
-  ['/gelernt', 'Gelernt'],
-  ['/protokoll', 'Protokoll'],
-  ['/einstellungen', 'Einstellungen']
-]
+// Menü je nach Rolle und freigegebenen Bereichen
+function navItems (session) {
+  const f = session.features || {}
+  return [
+    ['/', 'Übersicht'],
+    ...(f.webmail ? [['/post', 'Postfach']] : []),
+    ['/mails', 'Sortierung'],
+    ...(f.invoices ? [['/rechnungen', 'Rechnungen']] : []),
+    ['/gelernt', 'Gelernt'],
+    ['/protokoll', 'Protokoll'],
+    ['/einstellungen', 'Einstellungen'],
+    ...(session.admin ? [['/verwaltung', 'Verwaltung']] : [])
+  ]
+}
 
-export function page ({ title, body, session, path = '/', msg, err, wide }) {
-  const nav = session
-    ? `<nav class="nav">${NAV.map(([href, label]) => `<a href="${href}"${(href === '/' ? path === '/' : path.startsWith(href)) ? ' class="on"' : ''}>${label}</a>`).join('')}
-      <form method="post" action="/abmelden" class="logout">${csrf(session)}<button class="link">Abmelden</button></form></nav>`
+export function page ({ title, body, session, path = '/', msg, err, wide, full }) {
+  const nav = session && session.stage === 'full' && session.features
+    ? `<nav class="nav">${navItems(session).map(([href, label]) => `<a href="${href}"${(href === '/' ? path === '/' : path.startsWith(href)) ? ' class="on"' : ''}>${label}</a>`).join('')}
+      <form method="post" action="/abmelden" class="logout">${csrf(session)}<button class="link" title="${esc(session.display || session.name)} abmelden">Abmelden</button></form></nav>`
     : ''
   return `<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -23,11 +29,11 @@ export function page ({ title, body, session, path = '/', msg, err, wide }) {
 <link rel="stylesheet" href="/app.css"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <script src="/app.js" defer></script></head>
 <body><header class="top"><a class="brand" href="/"><img src="/icon.svg" alt="" width="28" height="28"><span>Mail-Sortierer</span></a>${nav}</header>
-<main class="${wide ? 'main wide' : 'main'}">
+<main class="${full ? 'main full' : wide ? 'main wide' : 'main'}">
 ${msg ? `<div class="alert ok">${esc(msg)}</div>` : ''}${err ? `<div class="alert bad">${esc(err)}</div>` : ''}
 ${body}
 </main>
-<footer class="foot">Mail-Sortierer ${esc(VERSION)} · lokale KI, nichts verlässt dein Netz</footer>
+${full ? '' : `<footer class="foot">Mail-Sortierer ${esc(VERSION)} · lokale KI, nichts verlässt dein Netz</footer>`}
 </body></html>`
 }
 

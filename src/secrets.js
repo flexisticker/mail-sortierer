@@ -16,6 +16,23 @@ function key () {
   return k
 }
 
+/** Einzelnen Wert verschlüsseln/entschlüsseln (z. B. 2FA-Geheimnis in der Benutzertabelle) */
+export function encrypt (value) {
+  const iv = crypto.randomBytes(12)
+  const c = crypto.createCipheriv('aes-256-gcm', key(), iv)
+  const enc = Buffer.concat([c.update(String(value), 'utf8'), c.final()])
+  return [iv, c.getAuthTag(), enc].map(b => b.toString('base64')).join('.')
+}
+export function decrypt (v) {
+  if (!v) return ''
+  try {
+    const [iv, tag, enc] = String(v).split('.').map(s => Buffer.from(s, 'base64'))
+    const d = crypto.createDecipheriv('aes-256-gcm', key(), iv)
+    d.setAuthTag(tag)
+    return Buffer.concat([d.update(enc), d.final()]).toString('utf8')
+  } catch { return '' }
+}
+
 export function setSecret (name, value) {
   const all = kvGet('secrets', {})
   if (!value) { delete all[name]; kvSet('secrets', all); return }

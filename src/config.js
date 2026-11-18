@@ -1,6 +1,7 @@
 // Einstellungen mit Vorgaben. Gespeichert in kv 'config'; Passwort separat verschlüsselt (secrets.js).
-import { kvGet, kvSet } from './db.js'
+import { kvGet, kvSet, sysGet, sysSet, currentUser } from './db.js'
 import { listAccounts } from './accounts.js'
+import { featuresOf } from './auth.js'
 
 // docker (Unraid/NAS) oder windows (Setup mit Dienst)
 export const PLATFORM = process.env.APP_PLATFORM || (process.platform === 'win32' ? 'windows' : 'docker')
@@ -48,6 +49,10 @@ export const DEFAULT_CONFIG = {
     spamHeader: true         // Spam-Kennzeichnung des Mailservers (X-Spam-Flag) übernehmen
   },
   cleanup: { spam: 0, verdacht: 0, mode: 'trash' }, // Tage im Ordner, 0 = nie aufräumen
+  sorting: {
+    onlySeen: false,         // nur gelesene Mails einsortieren (ungelesene bleiben, werden aber auf Gefahr geprüft)
+    danger: 'move'           // gefährliche Mails: move = nach „Achtung Verdacht“, mark = im Posteingang lassen und markieren
+  },
   business: { name: '', description: '' }, // Betrieb – nur als Hintergrund für die KI
   ollama: { url: PLATFORM === 'windows' ? 'http://localhost:11434' : '', model: 'qwen2.5:7b', timeoutSec: 120, numCtx: 4096 },
   root: 'Sortiert',
@@ -76,21 +81,42 @@ function merge (base, over) {
 }
 
 export function getConfig () {
-  const c = merge(DEFAULT_CONFIG, kvGet('config', {}))
+  const saved = kvGet('config', {})
+  const c = merge(DEFAULT_CONFIG, saved)
+  // Ollama (die gemeinsame KI) stellt nur der Verwalter ein – gilt für alle Nutzer
+  c.ollama = merge(DEFAULT_CONFIG.ollama, (sysGet('config', {}) || {}).ollama || {})
+  // Bereiche, die der Verwalter für diesen Nutzer freigegeben hat
+  const user = currentUser()
+  c.features = featuresOf(user)
+  if (user && user.role !== 'admin' && !(saved.sorting && saved.sorting.danger)) c.sorting.danger = 'mark'
+  if (!c.features.invoices) { c.invoices.accountId = 0; c.invoices.scanEnabled = false }
+  if (!c.features.scan) c.invoices.scanEnabled = false
+  if (!c.features.cleanup) c.cleanup = { ...c.cleanup, spam: 0, verdacht: 0 }
   // Kategorien: feste (IDs bleiben, Name/Beschreibung änderbar) + eigene Ordner (id c_…)
-  const saved = Array.isArray(c.categories) ? c.categories : []
+  const savedCats = Array.isArray(c.categories) ? c.categories : []
   const fixed = DEFAULT_CATEGORIES.map(d => {
-    const s = saved.find(x => x.id === d.id) || {}
+    const s = savedCats.find(x => x.id === d.id) || {}
     return { id: d.id, name: cleanFolderName(s.name) || d.name, desc: String(s.desc || d.desc).slice(0, 600), off: d.system ? false : !!s.off, system: !!d.system }
   })
-  const custom = saved.filter(x => x && /^c_[a-z0-9]{4,16}$/.test(x.id) && cleanFolderName(x.name))
+  const custom = savedCats.filter(x => x && /^c_[a-z0-9]{4,16}$/.test(x.id) && cleanFolderName(x.name))
     .map(x => ({ id: x.id, name: cleanFolderName(x.name), desc: String(x.desc || '').slice(0, 600), off: !!x.off, custom: true }))
   c.categories = [...fixed.filter(x => !x.system), ...custom, ...fixed.filter(x => x.system)]
   return c
 }
 
 export function saveConfig (patch) {
-  const c = merge(getConfig(), patch)
+  const { ollama, ...rest } = patch || {}
+  if (ollama) { const sys = sysGet('config', {}) || {}; sysSet('config', { ...sys, ollama: merge(sys.ollama || DEFAULT_CONFIG.ollama, ollama) }) }
+  // Abgeleitete Werte (Freigaben, Ollama) nicht in die Nutzer-Einstellungen schreiben
+  const { features, ollama: _o, ...cur } = getConfig()
+  const c = merge(cur, rest)
+  const saved = kvGet('config', {}) || {}
+  // Werte, die nur wegen fehlender Freigabe abgeschaltet sind, nicht überschreiben
+  if (!features.invoices && !(rest.invoices && 'accountId' in rest.invoices)) c.invoices.accountId = (saved.invoices || {}).accountId || 0
+  if ((!features.invoices || !features.scan) && !(rest.invoices && 'scanEnabled' in rest.invoices)) c.invoices.scanEnabled = (saved.invoices || {}).scanEnabled ?? DEFAULT_CONFIG.invoices.scanEnabled
+  if (!features.cleanup && !rest.cleanup) c.cleanup = saved.cleanup || DEFAULT_CONFIG.cleanup
+  // Die Haupt-Datenbank ist zugleich die des ersten Kontos: Ollama-Einstellung dort nicht verlieren
+  c.ollama = (sysGet('config', {}) || {}).ollama || DEFAULT_CONFIG.ollama
   kvSet('config', c)
   return getConfig()
 }
