@@ -175,3 +175,14 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   ohne Variable und ohne Datei bei vorhandenem keyCheck wird **nie** ein neuer Schlüssel erzeugt. Verwaltung → Sicherheits-Check zeigt die Quelle und (nur Heimnetz)
   „Schlüssel anzeigen“ mit Unraid-Anleitung. `windows/test.ps1` Schritt 1b prüft DPAPI. Getestet (Node-Skript): Umzug Datei → Variable, falsche/fehlende Variable, frische Installation.
   **Nicht getestet:** echtes DPAPI (nur im CI), Unraid-Variable am echten Server.
+- **2.2.0 (18.11.2026): Mail-Programm als Startseite** (Wunsch Michael: „per Browser erreichbar, auch für mich, das Bisherige nur noch Verwaltung“).
+  `/` leitet auf `/post` (ohne Mail-Freigabe auf `manageHome`), alte Übersicht jetzt **`/uebersicht`**. Kopfleiste (`html.js navItems`) nur Mail · Rechnungen · Verwaltung,
+  zweite Zeile `subNav` in allen Verwaltungs-Pfaden (`MANAGE_PATHS` /uebersicht /mails /gelernt /protokoll, `ADMIN_PATHS` /einstellungen /signaturen /verwaltung);
+  Verwalter-Seiten heißen jetzt „System“. Neue Freigabe **`manage`** (`FEATURES`, Familie Standard aus): ohne sie sind die Sortier-Seiten 403 (`needFeature`),
+  Probelauf/Scharf je Postfach steht deshalb auch unter Einstellungen → Postfächer (`/aktion/modus` mit `zurueck=einstellungen`).
+  Mail-Programm (`web-mail.js`): `/post/:acc?ordner&uid&q&seite` = Ordner | Liste | Mail (`readPane`), `/post/:acc/lesen` leitet nur noch um.
+  Kopf `X-Postwart-Teil: lesen` → nur die Mail als `<template data-title>` (app.js setzt sie rechts ein, `pushState`, ↑/↓, popstate = neu laden);
+  Aktionen mit `weiter` (nächste Mail, füllt app.js bei nachgeladenen Mails) und `liste`. Breite ≤ 1000 px: nacheinander (`.has-read`, `.only-narrow` Zurück-Knopf).
+  Verdächtig = rotes `.dmark` „!“ ($Phishing). Getestet (GreenMail, Playwright 1440/820/390 px, zwei Nutzer): Start, Spalten, Laden ohne Neuladen, Pfeiltasten,
+  Löschen → nächste Mail, Phishing-Warnung, alte Adresse, zweites Postfach, Familie ohne Sortier-Seiten (403) mit Scharf-Knopf, kein seitliches Scrollen.
+  **Nicht getestet:** echtes Alfahosting-Postfach, große Ordner, Safari/iPad.

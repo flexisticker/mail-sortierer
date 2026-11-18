@@ -38,7 +38,7 @@ export function registerAdmin (app) {
     const weiter = /^\/verwaltung(\/|$|\?)/.test(String(req.query.weiter || '')) ? String(req.query.weiter) : '/verwaltung'
     res.send(page({
       title: 'Bestätigen', session: req.session, path: '/verwaltung', ...flash(req),
-      body: `<section class="card narrow"><h1>Verwaltung bestätigen</h1>
+      body: `<section class="card narrow"><h1>System-Bereich bestätigen</h1>
       <p>Du bist nicht im Heimnetz. Zur Sicherheit bitte den aktuellen Code aus deiner Authenticator-App eingeben (gilt 10 Minuten).</p>
       <form method="post" action="/verwaltung/bestaetigen" class="form">${csrf(req.session)}<input type="hidden" name="weiter" value="${esc(weiter)}">
         <label>Code<input name="code" inputmode="numeric" maxlength="20" required autocomplete="one-time-code" autofocus></label>
@@ -62,7 +62,7 @@ export function registerAdmin (app) {
     const users = listUsers()
     const sessions = Object.fromEntries(sysdb.prepare("SELECT user_id, COUNT(*) n FROM sessions WHERE expires_at > ? AND stage = 'full' GROUP BY user_id").all(Date.now()).map(r => [r.user_id, r.n]))
     const accCount = (u) => { try { return withUser(u, () => listAccounts().length) } catch { return 0 } }
-    const body = `<h1>Verwaltung</h1>${tabs('/verwaltung')}
+    const body = `<h1>System</h1>${tabs('/verwaltung')}
     ${s.home ? '' : '<div class="alert info">Du bist von außen angemeldet. Nutzer verwalten geht (bestätigt), gemeinsame KI und Angriffsschutz lassen sich nur aus dem Heimnetz ändern.</div>'}
     <section class="card"><h2>Nutzer</h2>
       <p class="muted">Jeder Nutzer hat eine eigene Oberfläche mit eigenen Postfächern, Regeln und Gelerntem. Du siehst hier keine Mails und keine Postfach-Passwörter der anderen – du verwaltest nur die Zugänge. Die KI (Ollama) teilen sich alle.</p>
@@ -98,9 +98,9 @@ export function registerAdmin (app) {
         <label>Benutzername (zum Anmelden)<input name="name" required maxlength="40" pattern="[A-Za-z0-9ÄÖÜäöüß._@-]{2,40}" placeholder="z. B. anna"></label>
         <label>Anzeigename<input name="display" maxlength="60" placeholder="z. B. Anna"></label>
         <label>Rolle<select name="role">${options([['user', 'Nutzer'], ['admin', 'Verwalter']], 'user')}</select></label>
-        <fieldset class="span"><legend>Freigegebene Bereiche (Vorschlag für Familie: nur Sortieren, Aufräumen, Ordner, Webmail)</legend>${featureBoxes(SIMPLE_FEATURES)}</fieldset>
+        <fieldset class="span"><legend>Freigegebene Bereiche (Vorschlag für Familie: Mail-Programm, Aufräumen, Ordner – Sortierung läuft im Hintergrund)</legend>${featureBoxes(SIMPLE_FEATURES)}</fieldset>
         <div class="row span"><button class="btn primary">Anlegen</button></div></form></section>`
-    res.send(page({ title: 'Verwaltung', body, session: s, path: '/verwaltung', ...flash(req) }))
+    res.send(page({ title: 'System', body, session: s, path: '/verwaltung', ...flash(req) }))
   })
 
   const showPassword = (req, res, u, pw, text) => res.send(page({
@@ -159,7 +159,7 @@ export function registerAdmin (app) {
     const cfg = getConfig()
     const s = req.session
     const models = String(req.query.modelle || '').split(',').filter(Boolean)
-    const body = `<h1>Verwaltung</h1>${tabs('/verwaltung/ki')}
+    const body = `<h1>System</h1>${tabs('/verwaltung/ki')}
     <section class="card" id="ki"><h2>Gemeinsame KI (Ollama)</h2>
       <p class="muted">Die KI läuft bei dir – nichts geht ins Internet. Alle Nutzer teilen sich diese eine KI; die Anfragen laufen nacheinander (gerade in der Warteschlange: ${queueLength()}). ${PLATFORM === 'windows' ? 'Dafür „Ollama für Windows“ von ollama.com installieren (läuft dann unter <code>http://localhost:11434</code>) oder die Adresse eines Ollama-Servers im Netzwerk eintragen.' : 'Ollama-Adresse z. B. <code>http://&lt;Server-IP&gt;:11434</code>.'} Empfohlen mit Grafikkarte ab 6 GB: <code>qwen2.5:7b</code>; kleinere Karte: <code>qwen2.5:3b</code>.</p>
       ${s.home ? '' : '<div class="alert info">Nur aus dem Heimnetz änderbar.</div>'}
@@ -195,7 +195,7 @@ export function registerAdmin (app) {
     const o = shield.overview({ events: 150 })
     const chk = (v) => v ? ' checked' : ''
     const de = (v) => new Date(v).toLocaleString('de-DE', { timeZone: 'Europe/Berlin', dateStyle: 'short', timeStyle: 'short' })
-    const body = `<h1>Verwaltung</h1>${tabs('/verwaltung/schutz')}
+    const body = `<h1>System</h1>${tabs('/verwaltung/schutz')}
     <section class="card"><h2>Angriffsschutz</h2>
       <p class="muted">Ist Postwart von außen erreichbar, klopfen ständig Bots an. Wer in eine Falle tappt (z. B. <code>/wp-login.php</code>, <code>/.env</code>), Angriffsmuster schickt oder zu oft falsch anmeldet, sammelt Strafpunkte und wird gesperrt: 1 Stunde → 1 Tag → 7 Tage → 30 Tage. Heimnetz und erfolgreich angemeldete Geräte werden nie gesperrt.</p>
       <div class="kpis"><div><b>${o.stats.today}</b><span>heute</span></div><div><b>${o.stats.week}</b><span>7 Tage</span></div><div><b>${o.stats.month}</b><span>30 Tage</span></div><div><b>${o.bans.length}</b><span>gesperrt</span></div></div>
@@ -236,7 +236,7 @@ export function registerAdmin (app) {
     const s = req.session
     const list = selfCheck()
     const ICON = { ok: '✓', warn: '!', bad: '✕', info: 'i' }
-    const body = `<h1>Verwaltung</h1>${tabs('/verwaltung/check')}
+    const body = `<h1>System</h1>${tabs('/verwaltung/check')}
     <section class="card"><h2>Sicherheits-Check</h2>
       <ul class="checks">${list.map(c => `<li class="ck-${c.state}"><span class="ck-ic">${ICON[c.state]}</span><div><b>${esc(c.title)}</b><div class="muted small">${esc(c.text)}</div></div></li>`).join('')}</ul>
       <div class="row wrap"><form method="post" action="/verwaltung/check/update">${csrf(s)}<button class="btn">Jetzt nach Updates suchen</button></form>

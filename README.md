@@ -61,6 +61,16 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur versch
 - **Von außen** über Nginx Proxy Manager: siehe `docs/ZUGRIFF-VON-AUSSEN.md`. Angriffsschutz mit Fallen und IP-Sperren, Sicherheits-Check,
   wöchentliche Sicherheitsprüfung in der GitHub Action (npm audit, Trivy, gitleaks).
 
+## Mail-Programm im Browser (ab 2.2)
+
+- Nach der Anmeldung öffnet sich das **Mail-Programm**: am PC drei Spalten (Postfächer/Ordner · Liste · Mail),
+  ein Klick öffnet die Mail rechts ohne Neuladen, ↑/↓ wechselt die Mail, nach Löschen/Verschieben öffnet sich die nächste.
+  Am Handy und Tablet hochkant nacheinander (Liste → Mail → Zurück). Verdächtige Mails tragen ein rotes **!**.
+- Oben nur noch **Mail · Rechnungen · Verwaltung**. In der Verwaltung: Übersicht, Sortierung, Gelernt, Protokoll, Einstellungen,
+  Signaturen und (nur Verwalter) System (Nutzer, KI, Angriffsschutz, Sicherheits-Check).
+- Freigabe **„Sortierung sehen und prüfen“** je Nutzer (Verwalter immer): ohne sie sieht man nur Mail und die eigenen Einstellungen,
+  sortiert wird trotzdem im Hintergrund (Probelauf/Scharf je Postfach unter Einstellungen → Postfächer).
+
 ## Windows (ab 1.5)
 
 `Postwart-Setup-<Version>.exe` (Download über die Vedly-Zentrale bzw. Action-Artefakt): läuft als Windows-Dienst,

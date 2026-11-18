@@ -15,7 +15,7 @@ import { registerMail } from './web-mail.js'
 import { registerCompose } from './web-compose.js'
 import { PLATFORM, getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
-import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
+import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL, manageHome } from './html.js'
 import { runOnce, isRunning, getStatus, setStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { licenseState, activate, checkin, release } from './license.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword, smtpOf, saveSmtp } from './accounts.js'
@@ -127,7 +127,7 @@ export function createApp () {
   registerAdmin(app)
 
   // Bereiche, die der Verwalter nicht freigegeben hat, sind gesperrt
-  const needFeature = (f, label) => (req, res, next) => req.session.features[f] ? next() : res.status(403).send(page({ title: 'Nicht freigegeben', body: `<h1>Nicht freigegeben</h1><p>${esc(label)} ist für dein Konto nicht freigegeben. Frag den Verwalter.</p><p><a href="/">Zur Übersicht</a></p>`, session: req.session }))
+  const needFeature = (f, label) => (req, res, next) => req.session.features[f] ? next() : res.status(403).send(page({ title: 'Nicht freigegeben', body: `<h1>Nicht freigegeben</h1><p>${esc(label)} ist für dein Konto nicht freigegeben. Frag den Verwalter.</p><p><a href="/">Zur Startseite</a></p>`, session: req.session }))
   app.use('/rechnungen', needFeature('invoices', 'Der Bereich Rechnungen'))
   app.use('/einstellungen/rechnungen', needFeature('invoices', 'Der Bereich Rechnungen'))
   app.use('/einstellungen/aufraeumen', needFeature('cleanup', 'Das Aufräumen'))
@@ -138,8 +138,18 @@ export function createApp () {
   registerCompose(app) // vor registerMail: /post/neu und /post/senden dürfen nicht als Postfach-Nummer gelten
   registerMail(app)
 
-  // --- Übersicht ---
+  // Sortier-Seiten nur mit Freigabe „Sortierung sehen“ (Verwalter immer)
+  for (const p of ['/uebersicht', '/mails', '/gelernt', '/protokoll', '/regeln', '/beispiele', '/kontakte', '/rechnungen-gelernt']) app.use(p, needFeature('manage', 'Die Sortier-Übersicht'))
+
+  // Start: das Mail-Programm (ohne Postfach bzw. ohne Mail-Freigabe die Verwaltung)
   app.get('/', (req, res) => {
+    const s = req.session
+    if (s.features.webmail) return res.redirect('/post')
+    res.redirect(manageHome(s))
+  })
+
+  // --- Übersicht ---
+  app.get('/uebersicht', (req, res) => {
     const cfg = getConfig()
     const st = getStatus()
     const accSt = getAccStatus()
@@ -217,29 +227,29 @@ export function createApp () {
       </tbody></table>
       <p class="muted">Heute verschoben: ${today}</p>
     </section>`
-    res.send(page({ title: 'Übersicht', body, session: s, path: '/', ...flash(req) }))
+    res.send(page({ title: 'Übersicht', body, session: s, path: '/uebersicht', ...flash(req) }))
   })
 
   app.post('/aktion/lauf', (req, res) => {
     runOnce('von Hand')
-    back(res, '/', { msg: 'Durchlauf gestartet – die Seite in ein paar Sekunden neu laden.' })
+    back(res, req.session.features.manage ? '/uebersicht' : '/einstellungen#postfaecher', { msg: 'Durchlauf gestartet – die Seite in ein paar Sekunden neu laden.' })
   })
   app.post('/aktion/modus', (req, res) => {
     const acc = getAccount(req.body.account)
-    if (!acc) return back(res, '/', { err: 'Postfach nicht gefunden.' })
+    if (!acc) return back(res, manageHome(req.session), { err: 'Postfach nicht gefunden.' })
     const mode = req.body.mode === 'live' ? 'live' : 'probe'
     setAccountMode(acc.id, mode)
     log('info', `${accountLabel(acc)}: ${mode === 'live' ? 'scharf geschaltet' : 'zurück in den Probelauf'}`)
     if (mode === 'live') runOnce('scharf geschaltet')
-    back(res, '/#postfaecher', { msg: mode === 'live' ? `${accountLabel(acc)} ist scharf – Ordner werden angelegt und Mails verschoben.` : `${accountLabel(acc)}: Probelauf – es wird nichts mehr verschoben.` })
+    back(res, req.body.zurueck === 'einstellungen' || !req.session.features.manage ? '/einstellungen#postfaecher' : '/uebersicht#postfaecher', { msg: mode === 'live' ? `${accountLabel(acc)} ist scharf – Ordner werden angelegt und Mails verschoben.` : `${accountLabel(acc)}: Probelauf – es wird nichts mehr verschoben.` })
   })
   app.post('/aktion/pause', (req, res) => {
     saveConfig({ paused: req.body.paused === '1' })
-    back(res, '/', { msg: req.body.paused === '1' ? 'Zeitplan angehalten.' : 'Zeitplan läuft wieder.' })
+    back(res, manageHome(req.session), { msg: req.body.paused === '1' ? 'Zeitplan angehalten.' : 'Zeitplan läuft wieder.' })
   })
   app.post('/aktion/neu-pruefen', (req, res) => {
     const n = requeueKept()
-    back(res, '/', { msg: `${n} Mails werden beim nächsten Durchlauf neu eingeordnet.` })
+    back(res, '/uebersicht', { msg: `${n} Mails werden beim nächsten Durchlauf neu eingeordnet.` })
   })
 
   // --- Mails ---
@@ -682,6 +692,10 @@ export function createApp () {
       <p class="muted">Alle Postfächer, die sortiert werden sollen (Zugangsdaten wie in Outlook). Passwörter werden verschlüsselt gespeichert und nie angezeigt. Gelerntes gilt für alle Postfächer.</p>
       ${accounts.map(a => `<details class="acc"${String(req.query.offen) === String(a.id) ? ' open' : ''}><summary><b>${esc(accountLabel(a))}</b> <span class="muted small">${esc(a.user)} · ${esc(a.host)}</span>
           <span class="pill ${a.mode === 'live' ? 'good' : 'warn'}">${a.mode === 'live' ? 'Scharf' : 'Probelauf'}</span>${a.enabled ? '' : ' <span class="pill">aus</span>'}${target && target.id === a.id ? ' <span class="pill info">Rechnungen</span>' : ''}</summary>
+        <form method="post" action="/aktion/modus" class="row wrap mode-row">${csrf(s)}<input type="hidden" name="account" value="${a.id}"><input type="hidden" name="zurueck" value="einstellungen">
+          ${a.mode === 'live'
+            ? '<span class="muted small">Sortieren ist scharf: Mails werden wirklich verschoben.</span><input type="hidden" name="mode" value="probe"><button class="btn sm">Zurück in den Probelauf</button>'
+            : `<span class="muted small">Probelauf: Postwart zeigt nur, wo es einsortieren würde.</span><input type="hidden" name="mode" value="live"><button class="btn sm primary" data-confirm="${esc(accountLabel(a))} scharf schalten? Mails werden dann wirklich in die Ordner verschoben (gelöscht wird nichts).">Sortieren scharf schalten</button>`}</form>
         ${accountForm(a)}
         ${s.features.webmail ? smtpForm(a) : ''}
         <form method="post" action="/postfaecher/${a.id}/loeschen" class="row">${csrf(s)}<button class="btn ghost sm" data-confirm="${esc(accountLabel(a))} aus Postwart entfernen? Im Postfach selbst bleibt alles, wie es ist.">Postfach entfernen</button></form>
@@ -1015,11 +1029,11 @@ export function createApp () {
     }))
   })
 
-  app.use((req, res) => res.status(404).send(page({ title: 'Nicht gefunden', body: '<h1>Nicht gefunden</h1><p><a href="/">Zur Übersicht</a></p>', session: req.session })))
+  app.use((req, res) => res.status(404).send(page({ title: 'Nicht gefunden', body: '<h1>Nicht gefunden</h1><p><a href="/">Zur Startseite</a></p>', session: req.session })))
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
     log('error', `Fehler bei ${req.method} ${req.path}: ${errText(err)}`)
-    res.status(err.status === 413 ? 413 : 500).send(page({ title: 'Fehler', body: `<h1>Etwas ist schiefgegangen</h1><p>${esc(err.status === 413 ? 'Die Daten sind zu groß.' : 'Bitte noch einmal versuchen – Details im Protokoll.')}</p><p><a href="/">Zur Übersicht</a></p>`, session: req.session }))
+    res.status(err.status === 413 ? 413 : 500).send(page({ title: 'Fehler', body: `<h1>Etwas ist schiefgegangen</h1><p>${esc(err.status === 413 ? 'Die Daten sind zu groß.' : 'Bitte noch einmal versuchen – Details im Protokoll.')}</p><p><a href="/">Zur Startseite</a></p>`, session: req.session }))
   })
   return app
 }

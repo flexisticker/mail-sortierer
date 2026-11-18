@@ -50,10 +50,11 @@ export const FEATURES = {
   scan: 'Scanner-Ordner abholen',
   cleanup: 'Spam und Verdacht aufräumen (löschen)',
   folders: 'Eigene Ordner anlegen und Ordner umbenennen',
-  webmail: 'Webmail (Mails lesen und schreiben)'
+  webmail: 'Mail-Programm (Mails lesen und schreiben)',
+  manage: 'Sortierung sehen und prüfen (Übersicht, Sortierung, Gelernt, Protokoll)'
 }
 export const FULL_FEATURES = Object.fromEntries(Object.keys(FEATURES).map(k => [k, true]))
-export const SIMPLE_FEATURES = { invoices: false, lexware: false, scan: false, cleanup: true, folders: true, webmail: true }
+export const SIMPLE_FEATURES = { invoices: false, lexware: false, scan: false, cleanup: true, folders: true, webmail: true, manage: false }
 export function featuresOf (u) {
   if (!u) return { ...FULL_FEATURES }
   if (!u.features) return u.role === 'admin' ? { ...FULL_FEATURES } : { ...SIMPLE_FEATURES }

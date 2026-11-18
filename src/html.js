@@ -1,26 +1,38 @@
 // Kleine HTML-Helfer für die serverseitig erzeugten Seiten (alles maskiert).
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const VERSION = process.env.APP_VERSION || '2.1.0'
+export const VERSION = process.env.APP_VERSION || '2.2.0'
 
-// Menü je nach Rolle und freigegebenen Bereichen
+// Oben nur: Mail · Rechnungen · Verwaltung. Alles Übrige steckt in der Verwaltung (zweite Zeile).
+const MANAGE_PATHS = ['/uebersicht', '/mails', '/gelernt', '/protokoll']
+const ADMIN_PATHS = ['/einstellungen', '/signaturen', '/verwaltung']
+const inArea = (path, list) => list.some(p => path === p || path.startsWith(p + '/') || path.startsWith(p + '?'))
+export const manageHome = (session) => session.features && session.features.manage ? '/uebersicht' : '/einstellungen'
+
 function navItems (session) {
   const f = session.features || {}
   return [
-    ['/', 'Übersicht'],
-    ...(f.webmail ? [['/post', 'Postfach']] : []),
-    ['/mails', 'Sortierung'],
-    ...(f.invoices ? [['/rechnungen', 'Rechnungen']] : []),
-    ['/gelernt', 'Gelernt'],
-    ['/protokoll', 'Protokoll'],
-    ['/einstellungen', 'Einstellungen'],
-    ...(session.admin ? [['/verwaltung', 'Verwaltung']] : [])
+    ...(f.webmail ? [['/post', '✉ Mail', (p) => inArea(p, ['/post'])]] : []),
+    ...(f.invoices ? [['/rechnungen', '€ Rechnungen', (p) => inArea(p, ['/rechnungen'])]] : []),
+    [manageHome(session), '⚙ Verwaltung', (p) => inArea(p, [...MANAGE_PATHS, ...ADMIN_PATHS])]
   ]
+}
+function subNav (session, path) {
+  if (!inArea(path, [...MANAGE_PATHS, ...ADMIN_PATHS])) return ''
+  const f = session.features || {}
+  const items = [
+    ...(f.manage ? [['/uebersicht', 'Übersicht'], ['/mails', 'Sortierung'], ['/gelernt', 'Gelernt'], ['/protokoll', 'Protokoll']] : []),
+    ['/einstellungen', 'Einstellungen'],
+    ...(f.webmail ? [['/signaturen', 'Signaturen']] : []),
+    ...(session.admin ? [['/verwaltung', 'System']] : [])
+  ]
+  return `<nav class="subnav" aria-label="Verwaltung">${items.map(([h, l]) => `<a href="${h}"${inArea(path, [h]) ? ' class="on" aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`
 }
 
 export function page ({ title, body, session, path = '/', msg, err, wide, full }) {
-  const nav = session && session.stage === 'full' && session.features
-    ? `<nav class="nav">${navItems(session).map(([href, label]) => `<a href="${href}"${(href === '/' ? path === '/' : path.startsWith(href)) ? ' class="on"' : ''}>${label}</a>`).join('')}
+  const ok = session && session.stage === 'full' && session.features
+  const nav = ok
+    ? `<nav class="nav">${navItems(session).map(([href, label, on]) => `<a href="${href}"${on(path) ? ' class="on"' : ''}>${label}</a>`).join('')}
       <form method="post" action="/abmelden" class="logout">${csrf(session)}<button class="link" title="${esc(session.display || session.name)} abmelden">Abmelden</button></form></nav>`
     : ''
   return `<!doctype html>
@@ -28,7 +40,8 @@ export function page ({ title, body, session, path = '/', msg, err, wide, full }
 <title>${esc(title)} · Postwart</title>
 <link rel="stylesheet" href="/app.css"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <script src="/app.js" defer></script></head>
-<body><header class="top"><a class="brand" href="/"><img src="/icon.svg" alt="" width="28" height="28"><span>Postwart</span></a>${nav}</header>
+<body${full ? ' class="app"' : ''}><header class="top"><a class="brand" href="/"><img src="/icon.svg" alt="" width="28" height="28"><span>Postwart</span></a>${nav}</header>
+${ok ? subNav(session, path) : ''}
 <main class="${full ? 'main full' : wide ? 'main wide' : 'main'}">
 ${msg ? `<div class="alert ok">${esc(msg)}</div>` : ''}${err ? `<div class="alert bad">${esc(err)}</div>` : ''}
 ${body}

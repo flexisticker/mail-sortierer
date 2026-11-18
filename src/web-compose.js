@@ -202,7 +202,7 @@ export function registerCompose (app) {
     const accs = listAccounts()
     res.set('Content-Security-Policy', EDITOR_CSP)
     res.send(page({
-      title: 'Signaturen', session: s, path: '/post', ...flash(req),
+      title: 'Signaturen', session: s, path: '/signaturen', ...flash(req),
       body: `<h1>Signaturen</h1>
       <section class="card"><h2>Deine Signaturen</h2>
         ${sigs.map(x => `<div class="sig-item"><div class="row between"><b>${esc(x.name)}</b><span class="row"><a class="btn sm" href="/signaturen?bearbeiten=${x.id}">Bearbeiten</a>

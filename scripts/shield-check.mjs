@@ -9,9 +9,9 @@ const fail = (m) => { bad++; console.error('FEHLER:', m) }
 const OK_PATHS = ['/', '/anmelden', '/anmelden/code', '/anmelden/passwort', '/anmelden/einrichten-2fa', '/einrichten', '/abmelden', '/health', '/robots.txt',
   '/app.css', '/app.js', '/editor.js', '/icon.svg', '/icon.png', '/mails', '/mails/12/korrektur', '/rechnungen', '/rechnungen/5/datei', '/gelernt', '/protokoll',
   '/einstellungen', '/einstellungen/sicherheit', '/verwaltung', '/verwaltung/ki', '/verwaltung/schutz', '/verwaltung/check', '/verwaltung/nutzer/3',
-  '/post', '/post/1', '/post/1/lesen', '/post/1/inhalt', '/post/1/anhang', '/post/1/aktion', '/post/neu', '/post/senden', '/signaturen', '/.well-known/acme-challenge/abc']
+  '/post', '/post/1', '/uebersicht', '/post/1/lesen', '/post/1/inhalt', '/post/1/anhang', '/post/1/aktion', '/post/neu', '/post/senden', '/signaturen', '/.well-known/acme-challenge/abc']
 for (const p of OK_PATHS) { const r = inspect({ path: p, url: p }); if (r) fail(`Fehlalarm bei ${p}: ${r.kind}`) }
-const OK_QUERIES = ['/post/1?ordner=INBOX&seite=2&q=M%C3%BCller%20%26%20S%C3%B6hne', '/post/1/lesen?ordner=Sortiert.Rechnungen&uid=4711', '/mails?q=Rechnung%20Oktober&status=moved',
+const OK_QUERIES = ['/post/1?ordner=INBOX&seite=2&q=M%C3%BCller%20%26%20S%C3%B6hne', '/post/1?ordner=INBOX&uid=4711&bilder=1', '/post/1/lesen?ordner=Sortiert.Rechnungen&uid=4711', '/mails?q=Rechnung%20Oktober&status=moved',
   '/rechnungen?jahr=2026&monat=11', '/post/1/anhang?ordner=INBOX&uid=5&teil=2', '/post/neu?postfach=1&antwort=5&ordner=INBOX&art=alle']
 for (const u of OK_QUERIES) { const r = inspect({ path: u.split('?')[0], url: u }); if (r) fail(`Fehlalarm bei ${u}: ${r.kind}`) }
 
