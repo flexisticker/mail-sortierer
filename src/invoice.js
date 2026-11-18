@@ -416,8 +416,11 @@ export async function handleMailInvoice (ctx, acc, rec, client) {
   }
   const parts = monthParts(cfg, info.ym)
   const closed = yearClosed(info.ym, cfg)
-  const st = closed ? 'archived' : 'open'
-  const flags = cfg.invoices.flagOpen && !closed ? ['\\Flagged'] : []
+  // Ohne Beleg (nur Hinweis „Rechnung im Kundenkonto“ o. ä.): ablegen, aber nichts zu prüfen – kein Fähnchen
+  const nodoc = !docs.file
+  const st = closed ? 'archived' : nodoc ? 'nodoc' : 'open'
+  if (nodoc) base.hint = 'kein Beleg in der Mail – nichts zu prüfen'
+  const flags = cfg.invoices.flagOpen && st === 'open' ? ['\\Flagged'] : []
   if (target.id === acc.id) {
     // Mail liegt schon im Sammel-Postfach → direkt in den Monatsordner
     const dest = await ensurePath(client, parts)
@@ -740,7 +743,19 @@ export async function dropForMail (mailId) {
 }
 
 const cfg0 = () => getConfig()
-export const STATUS = { open: 'Offen', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler', blocked: 'Gesperrt', archived: 'Jahr abgeschlossen' }
+export const STATUS = { open: 'Offen', nodoc: 'Ohne Beleg', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler', blocked: 'Gesperrt', archived: 'Jahr abgeschlossen' }
+
+// Offene Rechnungen ohne Beleg brauchen keine Prüfung → Status „Ohne Beleg“, Fähnchen weg (läuft vor jedem Durchlauf)
+export async function applyNoDoc () {
+  const rows = db.prepare("SELECT * FROM invoices WHERE status IN ('open', 'error') AND COALESCE(file, '') = '' AND COALESCE(xml_file, '') = ''").all()
+  if (!rows.length) return 0
+  for (const r of rows) upd(r.id, { status: 'nodoc', decided_at: now(), hint: 'kein Beleg in der Mail – nichts zu prüfen', error: null })
+  try {
+    await withTarget(async (client) => { for (const r of rows) await relocate(client, r, null, false).catch(() => {}) })
+  } catch (e) { log('warn', 'Fähnchen konnten nicht entfernt werden: ' + e.message) }
+  log('info', `${rows.length} Rechnung(en) ohne Beleg aus der Prüfliste genommen`)
+  return rows.length
+}
 
 // Nach Änderung von „ab Jahr“: offene Rechnungen älterer Jahre abschließen (Fähnchen weg) bzw. wieder öffnen
 export async function applyYearSetting () {

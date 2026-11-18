@@ -505,7 +505,7 @@ export function createApp () {
     if (q) { where.push('(supplier LIKE ? OR number LIKE ? OR from_addr LIKE ? OR subject LIKE ? OR content LIKE ?)'); args.push(...Array(5).fill(`%${q}%`)) }
     const w = where.length ? 'WHERE ' + where.join(' AND ') : ''
     const rows = db.prepare(`SELECT * FROM invoices ${w} ORDER BY ${ym} DESC, inv_date DESC, id DESC LIMIT 500`).all(...args)
-    const sum = rows.filter(r => r.amount != null && r.status !== 'duplicate').reduce((a, r) => a + r.amount, 0)
+    const sum = rows.filter(r => r.amount != null && r.status !== 'duplicate' && r.status !== 'nodoc').reduce((a, r) => a + r.amount, 0)
     const counts = Object.fromEntries(db.prepare('SELECT status, COUNT(*) n FROM invoices GROUP BY status').all().map(r => [r.status, r.n]))
     const years = db.prepare(`SELECT DISTINCT substr(${ym}, 1, 4) y FROM invoices ORDER BY y DESC`).all().map(r => r.y).filter(Boolean)
     const accName = Object.fromEntries(listAccounts().map(a => [a.id, accountLabel(a)]))
@@ -513,14 +513,14 @@ export function createApp () {
     const here = req.originalUrl
     const money = (v, c) => v == null ? '–' : v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + (c && c !== 'EUR' ? c : '€')
     const ymd = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : ''
-    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['blocked', `Gesperrt (${counts.blocked || 0})`], ['archived', `Jahr abgeschlossen (${counts.archived || 0})`], ['', 'Alle']]
+    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['nodoc', `Ohne Beleg (${counts.nodoc || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['blocked', `Gesperrt (${counts.blocked || 0})`], ['archived', `Jahr abgeschlossen (${counts.archived || 0})`], ['', 'Alle']]
     // nach Monat gruppieren (Monat = Rechnungsdatum)
     const ymOfRow = (r) => (/^\d{4}-\d{2}/.test(r.inv_date || '') ? r.inv_date : r.created_at).slice(0, 7)
     const groups = []
     for (const r of rows) { const k = ymOfRow(r); let g = groups[groups.length - 1]; if (!g || g.ym !== k) { g = { ym: k, rows: [] }; groups.push(g) } g.rows.push(r) }
     const isOpen = (r) => r.status === 'open' || r.status === 'error'
     const ready = (r) => isOpen(r) && r.file && r.suggestion !== 'check' && r.suggestion !== 'private'
-    const sumOf = (list) => list.filter(r => r.amount != null && r.status !== 'duplicate' && r.status !== 'noinvoice').reduce((a, r) => a + r.amount, 0)
+    const sumOf = (list) => list.filter(r => r.amount != null && !['duplicate', 'noinvoice', 'nodoc'].includes(r.status)).reduce((a, r) => a + r.amount, 0)
     let idx = -1
     const rowHtml = (r) => { const i = ++idx; return `<tr class="ist-${esc(r.status)}" id="r${r.id}">
         <td><input type="checkbox" name="ids" value="${r.id}" form="ibulk" class="isel"></td>
@@ -556,7 +556,7 @@ export function createApp () {
     const monthHead = (g) => {
       const open = g.rows.filter(isOpen); const go = g.rows.filter(ready)
       const by = {}
-      for (const r of g.rows.filter(r => r.amount != null && !['duplicate', 'noinvoice', 'blocked'].includes(r.status))) {
+      for (const r of g.rows.filter(r => r.amount != null && !['duplicate', 'noinvoice', 'blocked', 'nodoc'].includes(r.status))) {
         const k = r.status === 'private' || (isOpen(r) && r.suggestion === 'private') ? 'privat' : (isOpen(r) && r.suggestion === 'check') ? 'zu prüfen' : (r.brand || 'Firma')
         by[k] = (by[k] || 0) + r.amount
       }

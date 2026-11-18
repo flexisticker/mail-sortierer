@@ -123,3 +123,6 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Mails mit Fähnchen bleiben, max. 500 je Ordner und Lauf. Papierkorb = Sonderordner `\Trash`, sonst Name (Trash/Papierkorb/Gelöschte Elemente …), keiner → Warnung, nichts passiert.
   „… jetzt leeren“ (Einstellungen → Sicherheit) = kv `cleanupNow` + `runOnce`. Datensätze `status 'deleted'` („Aufgeräumt“), Papierkorb-Fall mit `folder` = Papierkorb
   (dann geht „ist harmlos“/Korrektur noch, `correct()` sucht per Message-ID), endgültig = ohne folder. Getestet gegen GreenMail (Frist, Fähnchen, Papierkorb, endgültig, Datensatz), Einstellungen 1280/390.
+- **1.7.1:** Wunsch Michael: Rechnungen ohne Beleg nicht prüfen. Status **`nodoc`** („Ohne Beleg“): Mail-Rechnung ohne PDF/XML wird weiter im Monatsordner abgelegt,
+  aber ohne Fähnchen, nicht in „Offen“, nicht in Monatssummen, keine Knöpfe. `applyNoDoc()` (invoice.js, vor jedem Durchlauf) stellt bestehende offene/fehlerhafte
+  Einträge ohne Datei um und nimmt das Fähnchen weg. Filter „Ohne Beleg (n)“ auf der Seite Rechnungen. Getestet: Umstellung + Seite (Datenbank-Test), Mail-Weg nicht gegen GreenMail.
