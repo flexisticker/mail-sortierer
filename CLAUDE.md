@@ -126,3 +126,8 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
 - **1.7.1:** Wunsch Michael: Rechnungen ohne Beleg nicht prüfen. Status **`nodoc`** („Ohne Beleg“): Mail-Rechnung ohne PDF/XML wird weiter im Monatsordner abgelegt,
   aber ohne Fähnchen, nicht in „Offen“, nicht in Monatssummen, keine Knöpfe. `applyNoDoc()` (invoice.js, vor jedem Durchlauf) stellt bestehende offene/fehlerhafte
   Einträge ohne Datei um und nimmt das Fähnchen weg. Filter „Ohne Beleg (n)“ auf der Seite Rechnungen. Getestet: Umstellung + Seite (Datenbank-Test), Mail-Weg nicht gegen GreenMail.
+- **1.8.0:** Wunsch Michael: Auftragsbestätigungen nicht prüfen, eigener Ordner. Status **`order`**, Ablage `Rechnungen/Auftragsbestätigungen/JJJJ`
+  (`invoices.orderName`, Einstellungen → Rechnungen), ohne Fähnchen, nicht in „Offen“/Summen, keine Doppel-Sperre per Nummer+Betrag (`dedupe` null, findDuplicate ignoriert `order`).
+  Erkennung `isOrderConfirmation()`: Betreff/Dateiname bzw. Anfang des PDF-Texts (`ORDER_RE`, nicht wenn „Rechnung/Invoice …“ dabei), sonst KI-Feld `belegart` (neu im Schema);
+  E-Rechnungen nie. `applyOrders()` vor jedem Durchlauf sortiert bestehende offene Einträge per Stichwort um. Knopf „Auftragsbestätigung“ (`markOrder`, lernt als Beispiel `order`),
+  „Wieder öffnen“ merkt die ID in kv `orderKeepOpen` (wird dann nicht wieder automatisch umsortiert). Getestet gegen GreenMail + Ollama-Mock (Betreff, nur KI, normale Rechnung).

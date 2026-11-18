@@ -117,6 +117,7 @@ const INV_SCHEMA = {
   type: 'object',
   properties: {
     ist_rechnung: { type: 'boolean' },
+    belegart: { type: 'string', enum: ['rechnung', 'gutschrift', 'auftragsbestaetigung', 'sonstiges'] },
     lieferant: { type: 'string' },
     nummer: { type: 'string' },
     datum: { type: 'string' },
@@ -127,7 +128,7 @@ const INV_SCHEMA = {
     firma: { type: 'string' },
     grund: { type: 'string' }
   },
-  required: ['ist_rechnung', 'lieferant', 'nummer', 'datum', 'betrag', 'waehrung', 'inhalt', 'zuordnung', 'firma', 'grund']
+  required: ['ist_rechnung', 'belegart', 'lieferant', 'nummer', 'datum', 'betrag', 'waehrung', 'inhalt', 'zuordnung', 'firma', 'grund']
 }
 
 async function kiExtract (cfg, { from, subject, text, fileName, examples }) {
@@ -138,7 +139,8 @@ async function kiExtract (cfg, { from, subject, text, fileName, examples }) {
   for (const x of examples || []) {
     shots.push({ role: 'user', content: `Von: ${x.from_addr || '-'}\nInhalt:\n${String(x.snippet || '').slice(0, 800)}` })
     shots.push({ role: 'assistant', content: JSON.stringify({
-      ist_rechnung: x.decision !== 'noinvoice', lieferant: x.supplier || '', nummer: x.number || '', datum: x.inv_date || '', betrag: x.amount ?? null, waehrung: 'EUR',
+      ist_rechnung: x.decision !== 'noinvoice' && x.decision !== 'order',
+      belegart: x.decision === 'order' ? 'auftragsbestaetigung' : x.decision === 'noinvoice' ? 'sonstiges' : 'rechnung', lieferant: x.supplier || '', nummer: x.number || '', datum: x.inv_date || '', betrag: x.amount ?? null, waehrung: 'EUR',
       inhalt: x.content || '', zuordnung: x.decision === 'private' ? 'privat' : x.brand || x.decision === 'business' ? 'firma' : 'unklar', firma: x.brand || '',
       grund: 'So wurde es geprüft.' }) })
   }
@@ -146,6 +148,7 @@ async function kiExtract (cfg, { from, subject, text, fileName, examples }) {
     { role: 'system', content: [
       `Du liest Rechnungen ${biz.name || biz.description ? `für ${[biz.name, biz.description].filter(Boolean).join(' – ')}` : 'für einen kleinen Betrieb'} aus.`,
       'ist_rechnung: true nur für eine echte Rechnung oder Gutschrift (Beleg für die Buchhaltung) – nicht für Zahlungsbestätigung, Mahnung ohne Rechnung, Kontoauszug, Bestellbestätigung, Angebot oder Werbung.',
+      'belegart: „rechnung“, „gutschrift“, „auftragsbestaetigung“ (Auftrags-/Bestellbestätigung, Order Confirmation – noch keine Rechnung) oder „sonstiges“.',
       'lieferant: Firma, die die Rechnung stellt (kurz, ohne Rechtsform-Zusätze wenn eindeutig). nummer: Rechnungsnummer genau wie gedruckt.',
       'inhalt: worum es geht, kurz in höchstens 8 Wörtern (z. B. „PLA-Filament 10 kg“, „Telefon/Internet Oktober“, „Webhosting 2027“).',
       'datum: Rechnungsdatum als JJJJ-MM-TT (nicht Liefer- oder Fälligkeitsdatum), leer wenn unbekannt. betrag: Gesamtbetrag brutto als Zahl mit Punkt, null wenn unbekannt. waehrung: z. B. EUR.',
@@ -161,6 +164,7 @@ async function kiExtract (cfg, { from, subject, text, fileName, examples }) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(r.datum || '')) ? r.datum : ''
   return {
     isInvoice: r.ist_rechnung !== false,
+    order: r.belegart === 'auftragsbestaetigung',
     supplier: String(r.lieferant || '').slice(0, 120),
     number: String(r.nummer || '').slice(0, 80),
     date,
@@ -280,6 +284,20 @@ const ymOf = (date, fallback) => {
   const d = /^\d{4}-\d{2}/.test(String(date || '')) ? String(date) : (fallback ? new Date(fallback).toISOString() : new Date().toISOString())
   return d.slice(0, 7)
 }
+// Auftrags-/Bestellbestätigung erkennen: Betreff/Dateiname bzw. Anfang des Belegs, sonst Einschätzung der KI
+const ORDER_RE = /auftrags[\s-]?best(ä|ae|a)tigung|bestell[\s-]?best(ä|ae|a)tigung|best(ä|ae|a)tigung (ihrer|der|zu ihrer) (bestellung|auftrag)|order confirmation|order acknowledg|confirmation de commande/i
+const INVOICE_RE = /\b(rechnung|invoice|faktura|gutschrift|rechnungsnummer|rechnungsdatum)\b/i
+export function isOrderConfirmation ({ subject, fileName, text, ki }) {
+  const head = `${subject || ''} ${fileName || ''}`
+  if (ORDER_RE.test(head) && !INVOICE_RE.test(head)) return true
+  const top = String(text || '').slice(0, 600)
+  if (ORDER_RE.test(top) && !INVOICE_RE.test(top)) return true
+  return !!ki && !INVOICE_RE.test(head)
+}
+export function orderParts (cfg, ym) {
+  return [cfg.invoices.root || 'Rechnungen', cfg.invoices.orderName || 'Auftragsbestätigungen', ym.slice(0, 4)]
+}
+
 export function monthParts (cfg, ym) {
   return [cfg.invoices.root || 'Rechnungen', ym.slice(0, 4), ym]
 }
@@ -289,7 +307,7 @@ function findDuplicate (hash, key) {
     const h = db.prepare("SELECT * FROM invoices WHERE file_hash = ? AND status NOT IN ('error', 'duplicate') LIMIT 1").get(hash)
     if (h) return h
   }
-  if (key) return db.prepare("SELECT * FROM invoices WHERE dedupe = ? AND status NOT IN ('error', 'duplicate') LIMIT 1").get(key)
+  if (key) return db.prepare("SELECT * FROM invoices WHERE dedupe = ? AND status NOT IN ('error', 'duplicate', 'order') LIMIT 1").get(key)
   return null
 }
 
@@ -335,6 +353,7 @@ export async function analyze (cfg, { source, pdf, pdfName, from, subject, mailD
     reason: k ? k.reason : 'E-Rechnung',
     pdf: pdfBuf, fileName, xml: xml && e ? xml : ''
   }
+  info.order = !e && isOrderConfirmation({ subject, fileName, text: text2, ki: k && k.order })
   info.ym = ymOf(info.date, mailDate)
   info.snippet = String(text2 || bodyText || '').replace(/\s+/g, ' ').trim().slice(0, 800)
   // Firma: zuerst wörtlich im Beleg/der Mail suchen, dann Gelerntes zum Absender, sonst Einschätzung der KI
@@ -402,7 +421,7 @@ export async function handleMailInvoice (ctx, acc, rec, client) {
     return { blocked: 'Gefährlicher Rechnungsanhang: ' + info.risk.join('; ') }
   }
   const docs = storeDocs(info)
-  const key = dedupeKey(info)
+  const key = info.order ? null : dedupeKey(info)
   const dup = findDuplicate(docs.file_hash, key)
   const base = {
     source: 'mail', account_id: acc.id, mail_id: rec.id, msgid: rec.msgid, from_addr: rec.from_addr, subject: rec.subject,
@@ -414,12 +433,13 @@ export async function handleMailInvoice (ctx, acc, rec, client) {
     log('info', `Rechnung ${info.number || rec.subject} ist doppelt (schon #${dup.id}) – nicht erneut abgelegt`)
     return null
   }
-  const parts = monthParts(cfg, info.ym)
+  const parts = info.order ? orderParts(cfg, info.ym) : monthParts(cfg, info.ym)
   const closed = yearClosed(info.ym, cfg)
   // Ohne Beleg (nur Hinweis „Rechnung im Kundenkonto“ o. ä.): ablegen, aber nichts zu prüfen – kein Fähnchen
   const nodoc = !docs.file
-  const st = closed ? 'archived' : nodoc ? 'nodoc' : 'open'
-  if (nodoc) base.hint = 'kein Beleg in der Mail – nichts zu prüfen'
+  const st = info.order ? 'order' : closed ? 'archived' : nodoc ? 'nodoc' : 'open'
+  if (info.order) base.hint = 'Auftragsbestätigung – nichts zu prüfen'
+  else if (nodoc) base.hint = 'kein Beleg in der Mail – nichts zu prüfen'
   const flags = cfg.invoices.flagOpen && st === 'open' ? ['\\Flagged'] : []
   if (target.id === acc.id) {
     // Mail liegt schon im Sammel-Postfach → direkt in den Monatsordner
@@ -427,14 +447,14 @@ export async function handleMailInvoice (ctx, acc, rec, client) {
     if (flags.length) await client.messageFlagsAdd(String(rec.uid), flags, { uid: true })
     const newUid = await moveMessage(client, rec.uid, dest)
     insertInvoice({ ...base, folder: dest, uid: newUid, same_message: 1, status: st })
-    log('info', `Rechnung abgelegt: ${info.supplier || rec.from_addr} ${info.number} → ${dest}`)
+    log('info', `${info.order ? 'Auftragsbestätigung' : 'Rechnung'} abgelegt: ${info.supplier || rec.from_addr} ${info.number} → ${dest}`)
     return { folder: dest, uid: newUid }
   }
   const tc = await ctx.client(target)
   const dest = await ensurePath(tc, parts)
   const uid = await appendMessage(tc, dest, src, flags)
   insertInvoice({ ...base, folder: dest, uid, same_message: 0, status: st })
-  log('info', `Rechnung aus ${accountLabel(acc)} nach ${accountLabel(target)} kopiert: ${info.supplier || rec.from_addr} ${info.number} → ${dest}`)
+  log('info', `${info.order ? 'Auftragsbestätigung' : 'Rechnung'} aus ${accountLabel(acc)} nach ${accountLabel(target)} kopiert: ${info.supplier || rec.from_addr} ${info.number} → ${dest}`)
   return null
 }
 
@@ -531,7 +551,7 @@ export async function processScans (ctx, stats) {
         continue
       }
       const docs = storeDocs(info)
-      const key = dedupeKey(info)
+      const key = info.order ? null : dedupeKey(info)
       const dup = findDuplicate(docs.file_hash, key)
       const base = {
         source: 'scan', msgid, from_addr: 'Scanner', subject: name, supplier: info.supplier, number: info.number, inv_date: info.date, content: info.content, text_snippet: info.snippet, content: info.content, text_snippet: info.snippet,
@@ -545,15 +565,15 @@ export async function processScans (ctx, stats) {
         continue
       }
       const tc = await ctx.client(target)
-      const dest = await ensurePath(tc, monthParts(cfg, info.ym))
+      const dest = await ensurePath(tc, info.order ? orderParts(cfg, info.ym) : monthParts(cfg, info.ym))
       const subject = `Scan: ${[info.supplier, info.number].filter(Boolean).join(' ') || name}`
       const mail = buildScanMail({
         to: target.user, subject, fileName: name, pdf, msgid, date: new Date(),
         text: `Eingescannt am ${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}\nDatei: ${name}\nLieferant: ${info.supplier || '-'}\nRechnungsnummer: ${info.number || '-'}\nDatum: ${info.date || '-'}\nBetrag: ${info.amount != null ? info.amount.toFixed(2).replace('.', ',') + ' ' + info.currency : '-'}\n`
       })
       const closed = yearClosed(info.ym, cfg)
-      const uid = await appendMessage(tc, dest, mail, cfg.invoices.flagOpen && !closed ? ['\\Flagged'] : [])
-      insertInvoice({ ...base, account_id: target.id, folder: dest, uid, same_message: 1, status: closed ? 'archived' : 'open' })
+      const uid = await appendMessage(tc, dest, mail, cfg.invoices.flagOpen && !closed && !info.order ? ['\\Flagged'] : [])
+      insertInvoice({ ...base, account_id: target.id, folder: dest, uid, same_message: 1, status: info.order ? 'order' : closed ? 'archived' : 'open', ...(info.order ? { hint: 'Auftragsbestätigung – nichts zu prüfen' } : {}) })
       moveScanFile(dir, file, info.ym)
       stats.scans = (stats.scans || 0) + 1
       log('info', `Scan abgelegt: ${name} → ${dest}`)
@@ -682,7 +702,11 @@ export async function markNoInvoice (ids) {
 
 export async function reopen (ids) {
   const cfg = getConfig()
-  const list = ids.map(getInvoice).filter(i => i && ['private', 'noinvoice'].includes(i.status))
+  const list = ids.map(getInvoice).filter(i => i && ['private', 'noinvoice', 'order'].includes(i.status))
+  // Von Hand aus „Auftragsbestätigung“ zurückgeholt → automatische Erkennung lässt diese Einträge in Ruhe
+  const keep = new Set(kvGet('orderKeepOpen', []))
+  for (const i of list) if (i.status === 'order') keep.add(i.id)
+  kvSet('orderKeepOpen', [...keep].slice(-2000))
   await withTarget(async (client) => {
     for (const inv of list) {
       const loc = await relocate(client, inv, monthParts(cfg, ymOf(inv.inv_date, inv.created_at)), cfg.invoices.flagOpen)
@@ -743,7 +767,43 @@ export async function dropForMail (mailId) {
 }
 
 const cfg0 = () => getConfig()
-export const STATUS = { open: 'Offen', nodoc: 'Ohne Beleg', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler', blocked: 'Gesperrt', archived: 'Jahr abgeschlossen' }
+export const STATUS = { open: 'Offen', order: 'Auftragsbestätigung', nodoc: 'Ohne Beleg', sent: 'In Lexware', private: 'Privat', noinvoice: 'Keine Rechnung', duplicate: 'Doppelt', error: 'Fehler', blocked: 'Gesperrt', archived: 'Jahr abgeschlossen' }
+
+// Von Hand als Auftragsbestätigung ablegen (Rechnungen/Auftragsbestätigungen/JJJJ, ohne Fähnchen; die KI lernt mit)
+export async function markOrder (ids) {
+  const cfg = getConfig()
+  const list = ids.map(getInvoice).filter(i => i && ['open', 'error', 'noinvoice', 'nodoc', 'private'].includes(i.status))
+  await withTarget(async (client) => {
+    for (const inv of list) {
+      const loc = await relocate(client, inv, orderParts(cfg, ymOf(inv.inv_date, inv.created_at)), false)
+      upd(inv.id, { status: 'order', decided_at: now(), error: null, dedupe: null, hint: 'Auftragsbestätigung', ...loc })
+      invLearn(getInvoice(inv.id), 'order')
+    }
+  })
+  return list.length
+}
+
+// Offene Einträge, die schon am Betreff/Dateinamen/Belegtext als Auftragsbestätigung erkennbar sind, umsortieren (läuft vor jedem Durchlauf)
+export async function applyOrders () {
+  const cfg = getConfig()
+  const keepOpen = new Set(kvGet('orderKeepOpen', []))
+  const rows = db.prepare("SELECT * FROM invoices WHERE status IN ('open', 'error') AND COALESCE(einvoice, '') = ''").all()
+    .filter(r => !keepOpen.has(r.id) && isOrderConfirmation({ subject: r.subject, fileName: r.file_name, text: r.text_snippet }))
+  if (!rows.length) return 0
+  let n = 0
+  try {
+    await withTarget(async (client) => {
+      for (const r of rows) {
+        const loc = await relocate(client, r, orderParts(cfg, ymOf(r.inv_date, r.created_at)), false).catch(() => null)
+        if (!loc) continue
+        upd(r.id, { status: 'order', decided_at: now(), error: null, dedupe: null, hint: 'Auftragsbestätigung – nichts zu prüfen', ...loc })
+        n++
+      }
+    })
+  } catch (e) { log('warn', 'Auftragsbestätigungen umsortieren: ' + e.message) }
+  if (n) log('info', `${n} Auftragsbestätigung(en) aus der Prüfliste genommen und abgelegt`)
+  return n
+}
 
 // Offene Rechnungen ohne Beleg brauchen keine Prüfung → Status „Ohne Beleg“, Fähnchen weg (läuft vor jedem Durchlauf)
 export async function applyNoDoc () {

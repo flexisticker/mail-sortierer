@@ -7,7 +7,7 @@ import { connect, withClient, ensureFolders, categoryPath, pathString, readMessa
 import { classify } from './classify.js'
 import { recordCorrection, addExample, learnSender, isTrusted, isKnown } from './learn.js'
 import { phishCheck, brandList, blocklistCheck, senderIp, pdfRisk } from './security.js'
-import { handleMailInvoice, processScans, collecting, dropForMail, applyNoDoc } from './invoice.js'
+import { handleMailInvoice, processScans, collecting, dropForMail, applyNoDoc, applyOrders } from './invoice.js'
 import { licensedFull } from './license.js'
 import { cleanupAccount } from './cleanup.js'
 
@@ -254,7 +254,10 @@ async function run (why) {
     // Ohne gültige Lizenz nur Probelauf: nichts wird verschoben oder abgelegt
     const full = licensedFull()
     const accounts = enabledAccounts().map(a => full ? a : { ...a, mode: 'probe' })
-    if (collecting(cfg)) await applyNoDoc().catch(e => log('warn', 'Rechnungen ohne Beleg: ' + e.message))
+    if (collecting(cfg)) {
+      await applyOrders().catch(e => log('warn', 'Auftragsbestätigungen: ' + e.message))
+      await applyNoDoc().catch(e => log('warn', 'Rechnungen ohne Beleg: ' + e.message))
+    }
     let budget = isNight(cfg) ? Number(cfg.batchNight) || 300 : Number(cfg.batchDay) || 25
     for (const acc of accounts) {
       if (Date.now() - started > MAX_RUN_MS) break

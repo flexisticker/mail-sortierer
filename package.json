@@ -1,6 +1,6 @@
 {
   "name": "mail-sortierer",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "private": true,
   "description": "Sortiert ein IMAP-Postfach mit einer lokalen KI (Ollama) in Ordner – nichts verlässt das Heimnetz.",
   "type": "module",

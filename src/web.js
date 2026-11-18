@@ -13,7 +13,7 @@ import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from '.
 import { runOnce, isRunning, getStatus, setStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { licenseState, activate, checkin, release } from './license.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
-import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, reopen, release as releaseInvoice, editInvoice, forgetInvoiceLearning, applyYearSetting, checkScanDir, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
+import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, markOrder, reopen, release as releaseInvoice, editInvoice, forgetInvoiceLearning, applyYearSetting, checkScanDir, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
 import { listModels } from './ollama.js'
 import { parseDnsServers, systemDnsServers, testBlocklists } from './security.js'
@@ -505,7 +505,7 @@ export function createApp () {
     if (q) { where.push('(supplier LIKE ? OR number LIKE ? OR from_addr LIKE ? OR subject LIKE ? OR content LIKE ?)'); args.push(...Array(5).fill(`%${q}%`)) }
     const w = where.length ? 'WHERE ' + where.join(' AND ') : ''
     const rows = db.prepare(`SELECT * FROM invoices ${w} ORDER BY ${ym} DESC, inv_date DESC, id DESC LIMIT 500`).all(...args)
-    const sum = rows.filter(r => r.amount != null && r.status !== 'duplicate' && r.status !== 'nodoc').reduce((a, r) => a + r.amount, 0)
+    const sum = rows.filter(r => r.amount != null && r.status !== 'duplicate' && r.status !== 'nodoc' && r.status !== 'order').reduce((a, r) => a + r.amount, 0)
     const counts = Object.fromEntries(db.prepare('SELECT status, COUNT(*) n FROM invoices GROUP BY status').all().map(r => [r.status, r.n]))
     const years = db.prepare(`SELECT DISTINCT substr(${ym}, 1, 4) y FROM invoices ORDER BY y DESC`).all().map(r => r.y).filter(Boolean)
     const accName = Object.fromEntries(listAccounts().map(a => [a.id, accountLabel(a)]))
@@ -513,14 +513,14 @@ export function createApp () {
     const here = req.originalUrl
     const money = (v, c) => v == null ? '–' : v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + (c && c !== 'EUR' ? c : '€')
     const ymd = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : ''
-    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['nodoc', `Ohne Beleg (${counts.nodoc || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['blocked', `Gesperrt (${counts.blocked || 0})`], ['archived', `Jahr abgeschlossen (${counts.archived || 0})`], ['', 'Alle']]
+    const statusOpts = [['open', `Offen (${(counts.open || 0) + (counts.error || 0)})`], ['sent', `In Lexware (${counts.sent || 0})`], ['private', `Privat (${counts.private || 0})`], ['order', `Auftragsbestätigungen (${counts.order || 0})`], ['nodoc', `Ohne Beleg (${counts.nodoc || 0})`], ['noinvoice', `Keine Rechnung (${counts.noinvoice || 0})`], ['duplicate', `Doppelt (${counts.duplicate || 0})`], ['blocked', `Gesperrt (${counts.blocked || 0})`], ['archived', `Jahr abgeschlossen (${counts.archived || 0})`], ['', 'Alle']]
     // nach Monat gruppieren (Monat = Rechnungsdatum)
     const ymOfRow = (r) => (/^\d{4}-\d{2}/.test(r.inv_date || '') ? r.inv_date : r.created_at).slice(0, 7)
     const groups = []
     for (const r of rows) { const k = ymOfRow(r); let g = groups[groups.length - 1]; if (!g || g.ym !== k) { g = { ym: k, rows: [] }; groups.push(g) } g.rows.push(r) }
     const isOpen = (r) => r.status === 'open' || r.status === 'error'
     const ready = (r) => isOpen(r) && r.file && r.suggestion !== 'check' && r.suggestion !== 'private'
-    const sumOf = (list) => list.filter(r => r.amount != null && !['duplicate', 'noinvoice', 'nodoc'].includes(r.status)).reduce((a, r) => a + r.amount, 0)
+    const sumOf = (list) => list.filter(r => r.amount != null && !['duplicate', 'noinvoice', 'nodoc', 'order'].includes(r.status)).reduce((a, r) => a + r.amount, 0)
     let idx = -1
     const rowHtml = (r) => { const i = ++idx; return `<tr class="ist-${esc(r.status)}" id="r${r.id}">
         <td><input type="checkbox" name="ids" value="${r.id}" form="ibulk" class="isel"></td>
@@ -546,8 +546,9 @@ export function createApp () {
         <td class="nowrap">${isOpen(r) ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
             <button class="btn sm primary" name="aktion" value="buchhaltung"${r.file ? '' : ' disabled'} data-confirm="${esc(`An Lexware senden?\n${r.supplier || r.from_addr} – ${r.content || ''} – ${money(r.amount, r.currency)}`)}">Ab zu Lexware</button>
             <button class="btn sm" name="aktion" value="privat">Privat</button>
-            <button class="btn sm ghost" name="aktion" value="keine">Keine Rechnung</button></form>`
-          : (r.status === 'private' || r.status === 'noinvoice') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
+            <button class="btn sm ghost" name="aktion" value="keine">Keine Rechnung</button>
+            <button class="btn sm ghost" name="aktion" value="ab" title="In den Ordner für Auftragsbestätigungen – die KI lernt mit">Auftragsbestätigung</button></form>`
+          : (r.status === 'private' || r.status === 'noinvoice' || r.status === 'order') ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
             <button class="btn sm ghost" name="aktion" value="oeffnen">Wieder öffnen</button></form>`
           : r.status === 'sent' ? '<span class="pill good">in Lexware</span>'
           : r.status === 'blocked' && r.file ? `<form method="post" action="/rechnungen/aktion" class="inline">${csrf(s)}${anchor(rows, i, 'r')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="ids" value="${r.id}">
@@ -556,7 +557,7 @@ export function createApp () {
     const monthHead = (g) => {
       const open = g.rows.filter(isOpen); const go = g.rows.filter(ready)
       const by = {}
-      for (const r of g.rows.filter(r => r.amount != null && !['duplicate', 'noinvoice', 'blocked', 'nodoc'].includes(r.status))) {
+      for (const r of g.rows.filter(r => r.amount != null && !['duplicate', 'noinvoice', 'blocked', 'nodoc', 'order'].includes(r.status))) {
         const k = r.status === 'private' || (isOpen(r) && r.suggestion === 'private') ? 'privat' : (isOpen(r) && r.suggestion === 'check') ? 'zu prüfen' : (r.brand || 'Firma')
         by[k] = (by[k] || 0) + r.amount
       }
@@ -592,6 +593,7 @@ export function createApp () {
       <button class="btn primary" form="ibulk" name="aktion" value="buchhaltung" data-confirm="Ausgewählte Rechnungen an Lexware Office senden?">Ausgewählte ab zu Lexware</button>
       <button class="btn" form="ibulk" name="aktion" value="privat">Ausgewählte privat</button>
       <button class="btn ghost" form="ibulk" name="aktion" value="keine">Ausgewählte: keine Rechnung</button>
+      <button class="btn ghost" form="ibulk" name="aktion" value="ab">Ausgewählte: Auftragsbestätigung</button>
     </div>` : ''}`
     res.send(page({ title: 'Rechnungen', body, session: s, path: '/rechnungen', wide: true, ...flash(req) }))
   })
@@ -607,6 +609,7 @@ export function createApp () {
         return back(res, to, r.errors.length ? { err: `${r.done.length} gesendet, Fehler: ${r.errors.join(' | ')}` } : { msg: `${r.done.length} Rechnung(en) an Lexware Office gesendet – dort unter „Belege zu prüfen“.` })
       }
       if (req.body.aktion === 'privat') return back(res, to, { msg: `${await markPrivate(ids)} als privat abgelegt.` })
+      if (req.body.aktion === 'ab') return back(res, to, { msg: `${await markOrder(ids)} als Auftragsbestätigung abgelegt.` })
       if (req.body.aktion === 'keine') return back(res, to, { msg: `${await markNoInvoice(ids)} als „keine Rechnung“ abgelegt.` })
       if (req.body.aktion === 'freigeben') return back(res, to, { msg: `${releaseInvoice(ids)} Beleg(e) freigegeben – jetzt „Zur Buchhaltung“ möglich.` })
       if (req.body.aktion === 'oeffnen') return back(res, to, { msg: `${await reopen(ids)} wieder offen.` })
@@ -701,6 +704,7 @@ export function createApp () {
         <label>Hauptordner<input name="root" value="${esc(cfg.invoices.root)}" maxlength="60"></label>
         <label>Ordner für Privates<input name="privateName" value="${esc(cfg.invoices.privateName)}" maxlength="60"></label>
         <label>Ordner für „keine Rechnung“<input name="noInvoiceName" value="${esc(cfg.invoices.noInvoiceName)}" maxlength="60"></label>
+        <label>Ordner für Auftragsbestätigungen<input name="orderName" value="${esc(cfg.invoices.orderName || 'Auftragsbestätigungen')}" maxlength="60"></label>
         <label class="check span"><input type="checkbox" name="flagOpen" value="1"${chk(cfg.invoices.flagOpen)}> Offene Rechnungen in Outlook mit Fähnchen markieren</label>
         <label>Zu Lexware prüfen ab Jahr<input name="fromYear" type="number" min="0" max="2100" value="${cfg.invoices.fromYear || ''}" placeholder="alle Jahre"></label>
         <p class="muted small">Ältere Jahre sind erledigt: Rechnungen daraus werden weiter nach Jahr/Monat abgelegt, aber ohne Fähnchen und ohne „Ab zu Lexware“ (Status „Jahr abgeschlossen“).</p>
@@ -861,6 +865,7 @@ export function createApp () {
       root: cleanFolderName(b.root) || 'Rechnungen',
       privateName: cleanFolderName(b.privateName) || 'Privat',
       noInvoiceName: cleanFolderName(b.noInvoiceName) || 'Keine Rechnung',
+      orderName: cleanFolderName(b.orderName) || 'Auftragsbestätigungen',
       flagOpen: b.flagOpen === '1',
       scanEnabled: b.scanEnabled === '1',
       fromYear: b.fromYear ? int(b.fromYear, 2000, 2100, 0) : 0,

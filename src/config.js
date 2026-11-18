@@ -26,6 +26,7 @@ export const DEFAULT_CONFIG = {
     root: 'Rechnungen',      // Rechnungen/2026/2026-11
     privateName: 'Privat',   // Rechnungen/Privat/2026
     noInvoiceName: 'Keine Rechnung',
+    orderName: 'Auftragsbestätigungen', // Rechnungen/Auftragsbestätigungen/2026
     flagOpen: true,          // offene Rechnungen in Outlook mit Fähnchen
     fromYear: 0,             // Rechnungen erst ab diesem Jahr zu Lexware prüfen (0 = alle); ältere = „Jahr abgeschlossen“
     scanEnabled: !!process.env.SCAN_DIR, // Windows-Setup: im Setup gewählter Scan-Ordner ist gleich eingeschaltet

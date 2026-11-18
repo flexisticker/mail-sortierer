@@ -38,6 +38,7 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur versch
   dazu die Einschätzung der lokalen KI. Punktzahl ≥ Schwelle → Ordner **„Achtung Verdacht“**.
 - **Spam:** Spam-Kennzeichnung des Mailservers und Sperrlisten (Spamhaus ZEN/DBL, SpamCop, SURBL per DNS – es gehen nur
   IP-Adresse/Domain an den Betreiber, nie Inhalte) → Ordner **„Spam“**.
+- Auftragsbestätigungen werden erkannt und ohne Prüfung unter `Rechnungen/Auftragsbestätigungen/JJJJ` abgelegt; Rechnungen ohne Beleg landen unter „Ohne Beleg“.
 - Optional aufräumen: Spam/Verdacht nach X Tagen in den Papierkorb oder endgültig löschen (Standard: nie), Mails mit Fähnchen bleiben.
 - DNS-Server für die Sperrlisten einstellbar (Spamhaus lehnt öffentliche DNS-Server ab), mit Test-Knopf.
 - Fehlalarm: „ist harmlos“ bzw. Mail in Outlook herausziehen → Absender gilt als vertrauenswürdig.
