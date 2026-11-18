@@ -1,3 +1,12 @@
+// Handy/Tablet merken (Server zeigt dort im Mail-Programm nur die letzten Tage); bei Wechsel die Liste einmal neu laden
+;(function () {
+  const mobile = window.matchMedia('(max-width: 1000px), (pointer: coarse)').matches ? '1' : '0'
+  const had = (document.cookie.match(/(?:^|; )pw_mobil=([01])/) || [])[1]
+  if (had !== mobile) {
+    document.cookie = `pw_mobil=${mobile}; path=/; max-age=31536000; samesite=lax${location.protocol === 'https:' ? '; secure' : ''}`
+    if (document.querySelector('.mail-list') && !sessionStorage.getItem('pw_mobil_reload')) { sessionStorage.setItem('pw_mobil_reload', '1'); location.reload() }
+  }
+})()
 // Kleine Helfer ohne Inline-Skripte: Rückfragen, „alle wählen“, CSV-Datei in Textfeld laden
 document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-confirm]')

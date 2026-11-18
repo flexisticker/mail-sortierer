@@ -9,7 +9,7 @@ import {
   withMail, listFolders, listMessages, readMessage, attachmentsOf, assessForView, cleanMailHtml, textToHtml,
   imagesAllowed, allowImages, setFlags, moveMessages, deleteMessages, forgetCached
 } from './webmail.js'
-import { back, int, errText, flash } from './webutil.js'
+import { back, int, errText, flash, cookie } from './webutil.js'
 
 const PER = 50
 const isDrafts = (req) => { const f = req.folders.find(x => x.path === req.folder); return !!f && (f.special === '\\Drafts' || /^(drafts|entwürfe|entwurf)$/i.test(f.name)) }
@@ -77,7 +77,7 @@ export function registerMail (app) {
   app.get('/post/go', (req, res) => res.redirect(`/post/${int(req.query.postfach, 1, 1e9, 0)}`))
 
   const moveTargets = (req) => req.folders.filter(f => f.path !== req.folder).map(f => [f.path, '  '.repeat(f.depth) + f.name])
-  const listQuery = (req) => ({ ordner: req.folder, q: String(req.query.q || '').trim().slice(0, 100), seite: int(req.query.seite, 1, 100000, 1) > 1 ? int(req.query.seite, 1, 100000, 1) : '' })
+  const listQuery = (req) => ({ ordner: req.folder, q: String(req.query.q || '').trim().slice(0, 100), seite: int(req.query.seite, 1, 100000, 1) > 1 ? int(req.query.seite, 1, 100000, 1) : '', alle: req.query.alle === '1' ? 1 : '' })
   const listHref = (req, extra = {}) => `/post/${req.acc.id}?${q({ ...listQuery(req), ...extra })}`
 
   // Rechte Spalte: eine Mail (auch einzeln abrufbar, damit der Browser sie ohne Neuladen der Seite einsetzt)
@@ -148,8 +148,12 @@ export function registerMail (app) {
       res.set('Cache-Control', 'no-store')
       return res.type('html').send(`<template data-title="${esc(r.title)}">${r.html}</template>`)
     }
+    // Handy/Tablet (Merker vom Browser): nur die letzten Tage – weniger Daten, kürzere Liste. Suche geht immer über alles.
+    const days = int(getConfig().webmail?.mobileDays, 0, 3650, 14)
+    const limited = cookie(req, 'pw_mobil') === '1' && days > 0 && !query && req.query.alle !== '1'
+    const since = limited ? new Date(Date.now() - days * 864e5) : null
     let data
-    try { data = await listMessages(req.acc, req.folder, { page: seite, per: PER, q: query }) } catch (e) { return back(res, `/post/${req.acc.id}`, { err: errText(e) }) }
+    try { data = await listMessages(req.acc, req.folder, { page: seite, per: PER, q: query, since }) } catch (e) { return back(res, `/post/${req.acc.id}`, { err: errText(e) }) }
     const fname = (req.folders.find(f => f.path === req.folder) || {}).name || req.folder
     const pages = Math.max(1, Math.ceil(data.total / PER))
     const link = (p) => listHref(req, { seite: p > 1 ? p : '' })
@@ -180,6 +184,7 @@ export function registerMail (app) {
           <span class="mmeta">${m.flagged ? '<span class="flag" title="Fähnchen">⚑</span> ' : ''}${m.att ? '📎 ' : ''}${fmtShort(m.date)}</span>
           <span class="msubj">${m.answered ? '<span title="beantwortet">↩</span> ' : ''}${esc(m.subject || '(ohne Betreff)')}</span></a></li>`).join('') || `<li class="muted empty">${query ? 'Nichts gefunden.' : 'Keine Mails in diesem Ordner.'}</li>`}</ul>
       </form>
+      ${limited ? `<div class="limit-note muted small">Mails der letzten ${days} Tage · <a href="${esc(listHref(req, { alle: 1, seite: '' }))}">Ältere anzeigen</a></div>` : req.query.alle === '1' && cookie(req, 'pw_mobil') === '1' && days > 0 ? `<div class="limit-note muted small">Alle Mails · <a href="${esc(listHref(req, { alle: '', seite: '' }))}">nur letzte ${days} Tage</a></div>` : ''}
       ${pages > 1 ? `<div class="pager">${seite > 1 ? `<a class="btn sm" href="${esc(link(seite - 1))}">‹ neuere</a>` : ''} <span class="muted small">Seite ${seite} von ${pages}</span> ${seite < pages ? `<a class="btn sm" href="${esc(link(seite + 1))}">ältere ›</a>` : ''}</div>` : ''}
     </section>
     <section class="mail-read"${pane ? ` data-uid="${uid}"` : ''}>${pane ? pane.html : '<div class="read-empty muted">Wähle links eine Mail aus.</div>'}</section>

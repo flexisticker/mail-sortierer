@@ -53,6 +53,7 @@ export const DEFAULT_CONFIG = {
     onlySeen: false,         // nur gelesene Mails einsortieren (ungelesene bleiben, werden aber auf Gefahr geprüft)
     danger: 'move'           // gefährliche Mails: move = nach „Achtung Verdacht“, mark = im Posteingang lassen und markieren
   },
+  webmail: { mobileDays: 14 }, // Mail-Programm: am Handy/Tablet nur die letzten n Tage zeigen (0 = alle)
   business: { name: '', description: '' }, // Betrieb – nur als Hintergrund für die KI
   ollama: { url: PLATFORM === 'windows' ? 'http://localhost:11434' : '', model: 'qwen2.5:7b', timeoutSec: 120, numCtx: 4096 },
   root: 'Sortiert',

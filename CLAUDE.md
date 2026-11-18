@@ -186,3 +186,7 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Verdächtig = rotes `.dmark` „!“ ($Phishing). Getestet (GreenMail, Playwright 1440/820/390 px, zwei Nutzer): Start, Spalten, Laden ohne Neuladen, Pfeiltasten,
   Löschen → nächste Mail, Phishing-Warnung, alte Adresse, zweites Postfach, Familie ohne Sortier-Seiten (403) mit Scharf-Knopf, kein seitliches Scrollen.
   **Nicht getestet:** echtes Alfahosting-Postfach, große Ordner, Safari/iPad.
+- **2.3.0 (18.11.2026): Handy/Tablet nur die letzten 14 Tage** (Wunsch Michael). `config.webmail.mobileDays` (Standard 14, 0 = alle, je Nutzer, Einstellungen → Mail-Programm).
+  app.js setzt Cookie `pw_mobil=1` bei `(max-width: 1000px), (pointer: coarse)` (iPad zählt auch quer), lädt die Liste beim Wechsel einmal neu; `listMessages({ since })` = IMAP-SEARCH SINCE
+  (Eingangsdatum, nach UID sortiert). Suche und `alle=1` („Ältere anzeigen“, bleibt beim Öffnen/Zurück in `listQuery`) gehen über alles. Getestet (GreenMail, Playwright PC/iPhone 13/iPad quer):
+  PC alle 17, Handy/iPad 15 + Hinweis, „Ältere anzeigen“ 17, Suche findet alte. **Nicht getestet:** echte Geräte.

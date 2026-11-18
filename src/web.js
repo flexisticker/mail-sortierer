@@ -738,6 +738,13 @@ export function createApp () {
         <div class="row"><button class="btn primary">Speichern</button></div>
       </form></section>
 
+    ${s.features.webmail ? `<section class="card" id="mailprogramm"><h2>Mail-Programm</h2>
+      <form method="post" action="/einstellungen/mailprogramm" class="form two">${csrf(s)}
+        <label>Am Handy und Tablet nur die Mails der letzten … Tage zeigen<input name="mobileDays" type="number" value="${int(cfg.webmail?.mobileDays, 0, 3650, 14)}" min="0" max="3650"></label>
+        <p class="muted small">0 = alle. Ältere Mails bleiben auf dem Server und lassen sich jederzeit mit „Ältere anzeigen“ oder über die Suche öffnen. Postwart speichert keine Mails auf dem Gerät – es lädt nur die angezeigte Liste und die Mail, die du öffnest.</p>
+        <div class="row span"><button class="btn primary">Speichern</button></div>
+      </form></section>` : ''}
+
     <section class="card" id="ablauf"><h2>Ablauf</h2>
       <form method="post" action="/einstellungen/ablauf" class="form two">${csrf(s)}
         <label>Nachsehen alle … Minuten<input name="intervalMin" type="number" value="${cfg.intervalMin}" min="1" max="1440"></label>
@@ -913,6 +920,10 @@ export function createApp () {
 
   app.post('/einstellungen/ki', (req, res) => res.redirect(303, '/verwaltung/ki'))
 
+  app.post('/einstellungen/mailprogramm', (req, res) => {
+    saveConfig({ webmail: { mobileDays: int(req.body.mobileDays, 0, 3650, 14) } })
+    back(res, '/einstellungen#mailprogramm', { msg: 'Gespeichert.' })
+  })
   app.post('/einstellungen/sortieren', (req, res) => {
     saveConfig({ sorting: { onlySeen: req.body.onlySeen === '1', danger: req.body.danger === 'mark' ? 'mark' : 'move' } })
     log('info', `Sortieren: ${req.body.onlySeen === '1' ? 'nur gelesene Mails' : 'alle Mails'}, gefährliche Mails ${req.body.danger === 'mark' ? 'nur markieren' : 'verschieben'}`)

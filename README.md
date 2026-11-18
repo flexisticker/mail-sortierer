@@ -70,6 +70,8 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur versch
   Signaturen und (nur Verwalter) System (Nutzer, KI, Angriffsschutz, Sicherheits-Check).
 - Freigabe **„Sortierung sehen und prüfen“** je Nutzer (Verwalter immer): ohne sie sieht man nur Mail und die eigenen Einstellungen,
   sortiert wird trotzdem im Hintergrund (Probelauf/Scharf je Postfach unter Einstellungen → Postfächer).
+- **Handy und Tablet** zeigen nur die Mails der letzten 14 Tage (Einstellungen → Mail-Programm, 0 = alle), „Ältere anzeigen“ und die Suche gehen über alles.
+  Auf dem Gerät wird nichts gespeichert – geladen werden nur die angezeigte Liste und die geöffnete Mail.
 
 ## Windows (ab 1.5)
 

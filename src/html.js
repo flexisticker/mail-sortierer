@@ -1,7 +1,7 @@
 // Kleine HTML-Helfer für die serverseitig erzeugten Seiten (alles maskiert).
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const VERSION = process.env.APP_VERSION || '2.2.0'
+export const VERSION = process.env.APP_VERSION || '2.3.0'
 
 // Oben nur: Mail · Rechnungen · Verwaltung. Alles Übrige steckt in der Verwaltung (zweite Zeile).
 const MANAGE_PATHS = ['/uebersicht', '/mails', '/gelernt', '/protokoll']

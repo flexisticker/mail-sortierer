@@ -81,15 +81,15 @@ const hasAttachment = (node) => {
   return (node.childNodes || []).some(hasAttachment)
 }
 
-export async function listMessages (acc, folder, { page = 1, per = 50, q = '' } = {}) {
+export async function listMessages (acc, folder, { page = 1, per = 50, q = '', since = null } = {}) {
   return withMail(acc, async (client) => {
     const lock = await client.getMailboxLock(folder)
     try {
       const mb = client.mailbox
       let uids = null
       let total = mb.exists
-      if (q) {
-        const found = (await client.search({ or: [{ subject: q }, { from: q }, { to: q }, { body: q }] }, { uid: true })) || []
+      if (q || since) {
+        const found = (await client.search(q ? { or: [{ subject: q }, { from: q }, { to: q }, { body: q }] } : { since }, { uid: true })) || []
         uids = found.sort((a, b) => b - a)
         total = uids.length
       }
