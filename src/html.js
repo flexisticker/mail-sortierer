@@ -1,7 +1,7 @@
 // Kleine HTML-Helfer für die serverseitig erzeugten Seiten (alles maskiert).
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const VERSION = process.env.APP_VERSION || '2.5.0'
+export const VERSION = process.env.APP_VERSION || '2.6.0'
 
 // Oben nur: Mail · Rechnungen · Verwaltung. Alles Übrige steckt in der Verwaltung (zweite Zeile).
 const MANAGE_PATHS = ['/uebersicht', '/mails', '/gelernt', '/protokoll']
@@ -13,7 +13,7 @@ function navItems (session) {
   const f = session.features || {}
   return [
     ...(f.webmail ? [['/post', '✉ Mail', (p) => inArea(p, ['/post'])]] : []),
-    ...(f.invoices ? [['/rechnungen', '€ Rechnungen', (p) => inArea(p, ['/rechnungen'])]] : []),
+    ...(session.showInvoices ? [['/rechnungen', '€ Rechnungen', (p) => inArea(p, ['/rechnungen'])]] : []),
     [manageHome(session), '⚙ Verwaltung', (p) => inArea(p, [...MANAGE_PATHS, ...ADMIN_PATHS])]
   ]
 }

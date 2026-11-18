@@ -16,7 +16,7 @@ import { registerCompose } from './web-compose.js'
 import { PLATFORM, getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL, manageHome } from './html.js'
-import { runOnce, isRunning, getStatus, setStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
+import { reassessRecord, runOnce, isRunning, getStatus, setStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { licenseState, activate, checkin, release } from './license.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword, smtpOf, saveSmtp } from './accounts.js'
 import { testSmtp } from './compose.js'
@@ -131,6 +131,12 @@ export function createApp () {
     s.features = featuresOf(user)
     s.home = isHome(req)
     withUser(user, next)
+  })
+  // Reiter „Rechnungen“ nur zeigen, wenn er genutzt wird (Sammel-Postfach gewählt oder schon Rechnungen da)
+  app.use((req, res, next) => {
+    const s = req.session
+    try { s.showInvoices = !!s.features.invoices && (Number(getConfig().invoices.accountId) > 0 || !!db.prepare('SELECT 1 FROM invoices LIMIT 1').get()) } catch { s.showInvoices = !!s.features.invoices }
+    next()
   })
 
   registerAdmin(app)
@@ -314,7 +320,7 @@ export function createApp () {
           ${riskBox(r)}</td>
         <td class="nowrap">${r.status === 'gone' || (r.status === 'deleted' && !r.folder) ? '' : `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}">
             <select name="target" aria-label="Richtiger Ordner">${options(targets, r.decision)}</select><button class="btn sm">Ändern</button></form>
-          ${(r.decision === 'verdacht' || r.decision === 'spam') && r.status !== 'gone' ? `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="target" value="inbox"><button class="btn sm" data-confirm="Absender ${esc(r.from_addr)} als vertrauenswürdig merken und die Mail in den Posteingang legen?">ist harmlos</button></form>` : ''}
+          ${(r.decision === 'verdacht' || r.decision === 'spam') && r.status !== 'gone' ? `<form method="post" action="/mails/${r.id}/korrektur" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><input type="hidden" name="target" value="inbox"><input type="hidden" name="harmlos" value="1"><button class="btn sm" data-confirm="Absender ${esc(r.from_addr)} als vertrauenswürdig merken? Die Mail wird sofort neu eingeordnet.">ist harmlos</button></form>` : ''}
           ${['planned', 'moved', 'kept'].includes(r.status) && r.source !== 'correction' && r.source !== 'security' ? `<form method="post" action="/mails/${r.id}/passt" class="inline">${csrf(s)}${anchor(rows, i, 'm')}<input type="hidden" name="zurueck" value="${esc(here)}"><button class="btn sm ghost" title="Richtig – zählt für eine feste Regel">passt</button></form>` : ''}`}</td>
       </tr>`).join('') || '<tr><td colspan="5" class="muted">Keine Mails.</td></tr>'}
       </tbody></table></div>
@@ -334,6 +340,10 @@ export function createApp () {
 
   app.post('/mails/:id/korrektur', async (req, res) => {
     try {
+      if (req.body.harmlos === '1') {
+        const r = await reassessRecord(int(req.params.id, 1, 1e12, 0))
+        return back(res, safeBack(req.body.zurueck, req.body.anker), { msg: r[0] ? `Absender gilt als vertrauenswürdig – neu eingeordnet: „${r[0].label}“.` : 'Absender gilt als vertrauenswürdig.' })
+      }
       await correct(int(req.params.id, 1, 1e12, 0), String(req.body.target || ''))
       back(res, safeBack(req.body.zurueck, req.body.anker), { msg: `Geändert auf „${targetLabel(String(req.body.target))}“ – gemerkt.` })
     } catch (e) { back(res, safeBack(req.body.zurueck, req.body.anker), { err: errText(e) }) }
@@ -718,6 +728,7 @@ export function createApp () {
     </section>
 
     ${!s.features.invoices ? '' : `<section class="card" id="rechnungen" data-group="rechnungen"><h2>Rechnungen</h2>
+      ${Number(cfg.invoices.accountId) > 0 ? '' : '<div class="alert info">Rechnungen werden noch nicht gesammelt. Der Reiter „Rechnungen“ oben erscheint, sobald du hier ein Sammel-Postfach wählst – wer das nicht braucht, sieht ihn nicht.</div>'}
       <p class="muted">Rechnungen aus allen Postfächern werden im Sammel-Postfach nach Jahr und Monat abgelegt (z. B. „${esc(cfg.invoices.root)}/2026/2026-11“). Aus anderen Postfächern kommt eine Kopie, das Original wandert dort nach „Sortiert/Rechnungen“. Offene Rechnungen bekommen in Outlook ein Fähnchen.</p>
       <form method="post" action="/einstellungen/rechnungen" class="form two">${csrf(s)}
         <label>Sammel-Postfach<select name="accountId"><option value="0">– Rechnungen nicht sammeln –</option>${options(accounts.map(a => [a.id, accountLabel(a) + ' (' + a.user + ')']), cfg.invoices.accountId)}</select></label>

@@ -6,7 +6,7 @@ import { getConfig, activeCategories, categoryById, isNight, targetLabel } from 
 import { enabledAccounts, getAccount, accountLabel, migrateAccounts } from './accounts.js'
 import { connect, withClient, ensureFolders, categoryPath, pathString, readMessages, readIds, moveMessage, findByMsgId, listFolders } from './imap.js'
 import { classify } from './classify.js'
-import { recordCorrection, addExample, learnSender, isTrusted, isKnown } from './learn.js'
+import { recordCorrection, addExample, learnSender, isTrusted, isKnown, trustSender } from './learn.js'
 import { phishCheck, brandList, blocklistCheck, senderIp, pdfRisk } from './security.js'
 import { handleMailInvoice, processScans, collecting, dropForMail, applyNoDoc, applyOrders } from './invoice.js'
 import { licensedFull } from './license.js'
@@ -408,6 +408,76 @@ export async function correct (id, target) {
       upd(id, { ...base, status: target === 'inbox' ? 'kept' : 'moved', folder: dest, uid: newUid, moved_at: now() })
     } finally { lock.release() }
   })
+}
+
+/**
+ * „Ist harmlos“: Absender vertrauen, Warnung entfernen und die Mail sofort neu einordnen (Regeln, Kontakte, KI) –
+ * im scharfen Postfach gleich in den richtigen Ordner verschieben, im Probelauf nur neu vormerken.
+ * Rechnungen gehen in den Posteingang und werden vom nächsten Durchlauf abgelegt (dafür wird einer gestartet).
+ * Liefert je Mail { uid, target, label, moved, folder }.
+ */
+export async function reassessHarmless (acc0, folder, uids, sender) {
+  const cfg = getConfig()
+  const acc = licensedFull() ? acc0 : { ...acc0, mode: 'probe' }
+  if (sender && sender.includes('@')) trustSender(sender.toLowerCase(), 'ui')
+  const out = []
+  let needRun = false
+  await withClient(acc, async (client) => {
+    if (acc.mode === 'live') await ensureFolders(client, cfg, activeCategories(cfg))
+    const map = folderMap(client, cfg)
+    const lock = await client.getMailboxLock(folder)
+    try {
+      const uv = String(client.mailbox.uidValidity)
+      for (const m of await readMessages(client, uids)) {
+        await client.messageFlagsRemove(String(m.uid), ['\\Flagged', '$Phishing'], { uid: true }).catch(() => {})
+        if (!sender && m.from_addr) trustSender(m.from_addr, 'ui')
+        let d
+        try { d = await assess(m, cfg, null) } catch (e) { d = { decision: 'inbox', source: 'correction', reason: 'KI gerade nicht erreichbar – bleibt im Posteingang (' + String(e.message || e).slice(0, 80) + ')' } }
+        if (d.decision === 'verdacht' || d.decision === 'spam') d = { decision: 'inbox', source: 'correction', reason: 'als harmlos markiert' }
+        const target = d.decision
+        const reason = 'nach „ist harmlos“ neu eingeordnet' + (d.reason ? ': ' + d.reason : '')
+        let rec = m.msgid ? byMsgid.get(acc.id, m.msgid) : null
+        if (!rec) rec = insert(acc, m, { ...d, reason }, 'kept', folder, uv)
+        const base = { decision: target, source: d.source || 'ki', confidence: d.confidence ?? null, reason, error: null, risk: null, risk_reasons: null }
+        const viaInbox = target === 'inbox' || (target === 'rechnungen' && collecting())
+        const dest = acc.mode !== 'live' ? null : viaInbox ? 'INBOX' : destPath(map, target)
+        if (!dest || dest === folder) {
+          upd(rec.id, { ...base, folder, uid: m.uid, uidvalidity: uv, status: target === 'inbox' ? 'kept' : (folder === 'INBOX' ? 'planned' : 'moved') })
+          if (target === 'rechnungen' && folder === 'INBOX' && acc.mode === 'live') needRun = true
+          out.push({ uid: m.uid, target, label: targetLabel(target, cfg), moved: false, folder })
+          continue
+        }
+        const newUid = await moveMessage(client, m.uid, dest)
+        const planned = target === 'rechnungen'
+        // Im Posteingang zählt dessen UID-Gültigkeit (sonst hielte der nächste Durchlauf die Mail für neu)
+        const destUv = dest === 'INBOX' ? String((await client.status('INBOX', { uidValidity: true })).uidValidity) : (rec.uidvalidity || uv)
+        upd(rec.id, { ...base, folder: dest, uid: newUid, uidvalidity: destUv, status: planned ? 'planned' : target === 'inbox' ? 'kept' : 'moved', moved_at: now() })
+        if (planned) needRun = true
+        out.push({ uid: m.uid, target, label: targetLabel(target, cfg), moved: true, folder: dest })
+      }
+    } finally { lock.release() }
+  })
+  for (const x of out) log('info', `${accountLabel(acc)}: Mail als harmlos markiert → ${x.label}${x.moved ? ' (verschoben)' : acc.mode === 'live' ? '' : ' (Probelauf)'}`)
+  if (needRun) runOnce('nach „ist harmlos“')
+  return out
+}
+/** Variante für einen Eintrag aus der Sortier-Liste */
+export async function reassessRecord (id) {
+  const rec = byId.get(id)
+  if (!rec) throw new Error('Mail nicht gefunden')
+  const acc = getAccount(rec.account_id)
+  if (!acc) throw new Error('Postfach gibt es nicht mehr')
+  trustSender(rec.from_addr, 'ui')
+  if (rec.status === 'gone' || !rec.folder) { upd(id, { decision: 'inbox', source: 'correction', reason: 'als harmlos markiert' }); return [] }
+  const uid = await withClient(acc, async (client) => {
+    const lock = await client.getMailboxLock(rec.folder)
+    try {
+      const ok = rec.uid && ((await client.search({ uid: String(rec.uid) }, { uid: true })) || []).length
+      return ok ? rec.uid : (await findByMsgId(client, rec.msgid))[0]
+    } finally { lock.release() }
+  })
+  if (!uid) throw new Error(`Mail liegt nicht mehr in „${rec.folder}“ – wurde sie in Outlook verschoben oder gelöscht?`)
+  return reassessHarmless(acc, rec.folder, [uid], rec.from_addr)
 }
 
 export function confirm (id) {

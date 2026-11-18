@@ -202,3 +202,9 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   **Handy** = Schlüssel kopieren (`#key2fa` + `data-copy`: Clipboard-API, ohne HTTPS Rückfall markieren + `execCommand('copy')`), Schritte für Authy („Enter key manually“), Code zurückkopieren,
   zusätzlich `otpauth://`-Link; **PC** = QR scannen. app.js öffnet je nach Gerät (`(max-width: 1000px), (pointer: coarse)`) den passenden Weg. Hilfe-Block (Uhrzeit, 6 Ziffern, Authy-Telefonnummer).
   Gleiche Anleitung zum Weitergeben `docs/ZWEI-FAKTOR.md`. Getestet (Playwright Pixel 7 + PC): richtiger Weg offen, Kopieren = Schlüssel, Code bestätigt → Notfallcodes. **Nicht getestet:** echtes Authy.
+- **2.6.0 (18.11.2026): „Ist harmlos“ ordnet sofort neu ein + Rechnungen-Reiter nur bei Bedarf** (Wünsche Michael).
+  `reassessHarmless(acc, folder, uids, sender)` (worker.js): Absender vertrauen (`trustSender`), `\Flagged`/`$Phishing` weg, `readMessages` + `assess` (Regeln/Kontakte/KI; Verdacht/Spam
+  werden zu „Posteingang“), scharf: sofort in den Zielordner verschieben (Rechnungen über den Posteingang als `planned` + `runOnce`, INBOX-UID-Gültigkeit per `status`), Probelauf: nur neu vormerken.
+  KI nicht erreichbar → bleibt/kommt in den Posteingang. `reassessRecord(id)` für die Sortier-Liste (Knopf „ist harmlos“ schickt `harmlos=1`). Webmail-Aktion `harmlos` nutzt es ebenfalls.
+  Reiter „Rechnungen“ oben (`session.showInvoices`, Middleware nach der Anmeldung): Freigabe `invoices` **und** (Sammel-Postfach gewählt oder schon Rechnungen da); Hinweis unter Einstellungen → Rechnungen.
+  Getestet (GreenMail + Ollama-Mock): Kundenanfrage mit DMARC-Fehler → Verdacht → „ist harmlos“ im Mail-Programm und in der Sortier-Liste → sofort „Kunden“; Reiter erscheint erst nach Wahl des Sammel-Postfachs.

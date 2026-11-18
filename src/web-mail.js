@@ -3,7 +3,7 @@ import { page, esc, csrf, options } from './html.js'
 import { listAccounts, getAccount, accountLabel } from './accounts.js'
 import { getConfig, categoryById } from './config.js'
 import { categoryPath, pathString, ensurePath } from './imap.js'
-import { trustSender } from './learn.js'
+import { reassessHarmless } from './worker.js'
 import { log } from './db.js'
 import {
   withMail, listFolders, listMessages, readMessage, attachmentsOf, assessForView, cleanMailHtml, textToHtml,
@@ -117,7 +117,7 @@ export function registerMail (app) {
       </div>
       ${risk.level === 'bad' || phishFlag ? `<div class="alert bad"><b>⚠ Vorsicht – diese Mail ist verdächtig.</b> Keine Links anklicken, keine Anhänge öffnen, keine Daten eingeben.<ul>${risk.reasons.slice(0, 6).map(r => `<li>${esc(r)}</li>`).join('')}</ul>
         <form method="post" action="/post/${req.acc.id}/aktion" class="inline">${hidden}<input type="hidden" name="absender" value="${esc(from.address)}">
-          <button class="btn sm" name="aktion" value="harmlos" data-confirm="Absender ${esc(from.address)} als vertrauenswürdig merken und die Warnung entfernen?">Ist harmlos</button></form></div>`
+          <button class="btn sm" name="aktion" value="harmlos" data-confirm="Absender ${esc(from.address)} als vertrauenswürdig merken? Die Mail wird sofort neu eingeordnet.">Ist harmlos</button></form></div>`
         : risk.level === 'warn' ? `<div class="alert warn"><b>Auffällig:</b> ${risk.reasons.slice(0, 3).map(esc).join('; ')}</div>` : ''}
       <article class="mail-view">
         <h1 class="msubject">${esc(p.subject || '(ohne Betreff)')}</h1>
@@ -255,11 +255,14 @@ export function registerMail (app) {
         case 'markieren': await setFlags(acc, req.folder, uids, '\\Flagged', true); break
         case 'entmarkieren': await setFlags(acc, req.folder, uids, '\\Flagged', false); break
         case 'harmlos': {
-          await setFlags(acc, req.folder, uids, ['\\Flagged', '$Phishing'], false)
+          // Absender vertrauen, Warnung weg und sofort neu einordnen (bei scharfem Postfach gleich verschieben)
           const sender = String(req.body.absender || '').toLowerCase()
-          if (sender.includes('@')) trustSender(sender, 'ui')
           uids.forEach(u => forgetCached(acc, req.folder, u))
-          return back(res, to, { msg: 'Warnung entfernt, Absender gilt als vertrauenswürdig.' })
+          const r = await reassessHarmless(acc, req.folder, uids, sender.includes('@') ? sender : '')
+          folderCache.delete(`${req.session.userId}:${acc.id}`)
+          const x = r[0]
+          if (x && x.moved) return back(res, listUrl, { msg: `Absender gilt als vertrauenswürdig – Mail neu eingeordnet: „${x.label}“.` })
+          return back(res, to, { msg: x ? `Warnung entfernt, Absender gilt als vertrauenswürdig – neu eingeordnet: „${x.label}“${acc.mode === 'live' ? '' : ' (Probelauf, nicht verschoben)'}.` : 'Warnung entfernt, Absender gilt als vertrauenswürdig.' })
         }
         case 'verschieben': {
           const dest = String(req.body.ziel || '')
