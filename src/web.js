@@ -64,6 +64,15 @@ export function createApp () {
     next()
   })
 
+  // Hell/Dunkel je Gerät (Cookie pw_theme): steht schon im ausgelieferten HTML – kein Flackern, kein Skript im Kopf nötig
+  app.use((req, res, next) => {
+    const t = cookie(req, 'pw_theme')
+    if (t === 'light' || t === 'dark') {
+      const send = res.send
+      res.send = function (b) { if (typeof b === 'string' && b.startsWith('<!doctype html>\n<html lang="de">')) b = b.replace('<html lang="de">', `<html lang="de" data-theme="${t}">`); return send.call(this, b) }
+    }
+    next()
+  })
   app.get('/health', (req, res) => res.json({ ok: true, id: 'mail-sortierer' }))
   // robots.txt mit Köder: wer die verbotene Adresse trotzdem aufruft, ist ein Bot
   app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /intern/\nDisallow: /\n'))
@@ -278,7 +287,7 @@ export function createApp () {
     const qs = (p) => { const u = new URLSearchParams({ ...(status && { status }), ...(ordner && { ordner }), ...(quelle && { quelle }), ...(konto && { postfach: konto }), ...(q && { q }), seite: p }); return '/mails?' + u }
     const here = req.originalUrl
     const body = `
-    <h1>Mails</h1>
+    <h1>Sortierung</h1>
     <form method="get" action="/mails" class="filters">
       <select name="status"><option value="">Alle Zustände</option>${options(Object.entries(STATUS_LABEL), status)}</select>
       <select name="ordner"><option value="">Alle Ziele</option>${options(targets, ordner)}</select>
@@ -317,7 +326,7 @@ export function createApp () {
       </div>
       <div class="pager">${pageNo > 1 ? `<a class="btn sm" href="${esc(qs(pageNo - 1))}">‹ zurück</a>` : ''} Seite ${pageNo} von ${Math.max(1, Math.ceil(total / per))} ${pageNo * per < total ? `<a class="btn sm" href="${esc(qs(pageNo + 1))}">weiter ›</a>` : ''}</div>
     </div>`
-    res.send(page({ title: 'Mails', body, session: s, path: '/mails', wide: true, ...flash(req) }))
+    res.send(page({ title: 'Sortierung', body, session: s, path: '/mails', wide: true, ...flash(req) }))
   })
 
   const withAnchor = (url, a) => /^[mr]\d{1,12}$/.test(String(a || '')) ? url.replace(/#.*$/, '') + '#' + a : url
@@ -563,8 +572,8 @@ export function createApp () {
     <h1>Rechnungen</h1>
     ${cfg.invoices.fromYear ? `<p class="muted small">Geprüft wird ab <b>${cfg.invoices.fromYear}</b> – ältere Jahre sind abgeschlossen (<a href="/einstellungen#rechnungen">ändern</a>).</p>` : ''}
     <p class="muted">Nichts geht von selbst zu Lexware – erst wenn du hier auf „Ab zu Lexware“ klickst. Zum Prüfen markierte (❓) und private Rechnungen werden beim Monats-Knopf nicht mitgeschickt.</p>
-    ${target ? '' : '<div class="alert bad">Noch kein Sammel-Postfach gewählt – <a href="/einstellungen#rechnungen">Einstellungen → Rechnungen</a>.</div>'}
-    ${hasSecret('lexwareKey') ? '' : '<div class="alert bad">Noch kein Lexware-Schlüssel hinterlegt – „Ab zu Lexware“ geht erst danach (<a href="/einstellungen#rechnungen">Einstellungen</a>).</div>'}
+    ${target ? '' : '<div class="alert info">Noch kein Sammel-Postfach gewählt – <a href="/einstellungen#rechnungen">Einstellungen → Rechnungen</a>.</div>'}
+    ${hasSecret('lexwareKey') ? '' : '<div class="alert info">Noch kein Lexware-Schlüssel hinterlegt – „Ab zu Lexware“ geht erst danach (<a href="/einstellungen#rechnungen">Einstellungen</a>).</div>'}
     <form method="get" action="/rechnungen" class="filters">
       <select name="status">${options(statusOpts, status)}</select>
       <select name="zuordnung"><option value="">Firma & privat</option>${options([...companies.map(c => [c, c]), ['privat', 'Privat'], ['pruefen', 'Bitte prüfen']], zu)}</select>
@@ -675,7 +684,12 @@ export function createApp () {
       </form>` }
     const body = `
     <h1>Einstellungen</h1>
-    <section class="card" id="betrieb"><h2>Dein Betrieb</h2>
+    <div class="set-wrap"><nav class="set-nav" aria-label="Bereiche der Einstellungen">
+      ${[['betrieb', 'allgemein', 'Allgemein'], ['postfaecher', 'postfaecher', 'Postfächer'], ['sortieren', 'sortieren', 'Sortieren'], ['ordner', 'ordner', 'Ordner'],
+        ...(s.features.invoices ? [['rechnungen', 'rechnungen', 'Rechnungen']] : []), ['sicherheit', 'sicherheit', 'Sicherheit'], ['konto', 'konto', 'Mein Konto']]
+        .map(([id, g, l]) => `<a href="#${id}" data-tab="${g}">${l}</a>`).join('')}
+    </nav><div class="set-body">
+    <section class="card" id="betrieb" data-group="allgemein"><h2>Dein Betrieb</h2>
       <p class="muted">Hilft der KI beim Einordnen und bei der Frage „Firma oder privat?“. Nichts davon verlässt deinen Rechner.</p>
       <form method="post" action="/einstellungen/betrieb" class="form two">${csrf(s)}
         <label>Name des Betriebs<input name="bizName" value="${esc(cfg.business.name)}" maxlength="80" placeholder="z. B. Musterdruck"></label>
@@ -688,7 +702,7 @@ export function createApp () {
 
     ${s.admin ? licSection() : ''}
 
-    <section class="card" id="postfaecher"><h2>Postfächer</h2>
+    <section class="card" id="postfaecher" data-group="postfaecher"><h2>Postfächer</h2>
       <p class="muted">Alle Postfächer, die sortiert werden sollen (Zugangsdaten wie in Outlook). Passwörter werden verschlüsselt gespeichert und nie angezeigt. Gelerntes gilt für alle Postfächer.</p>
       ${accounts.map(a => `<details class="acc"${String(req.query.offen) === String(a.id) ? ' open' : ''}><summary><b>${esc(accountLabel(a))}</b> <span class="muted small">${esc(a.user)} · ${esc(a.host)}</span>
           <span class="pill ${a.mode === 'live' ? 'good' : 'warn'}">${a.mode === 'live' ? 'Scharf' : 'Probelauf'}</span>${a.enabled ? '' : ' <span class="pill">aus</span>'}${target && target.id === a.id ? ' <span class="pill info">Rechnungen</span>' : ''}</summary>
@@ -703,7 +717,7 @@ export function createApp () {
       <details class="acc"${accounts.length ? '' : ' open'}><summary><b>+ Postfach hinzufügen</b></summary>${accountForm(null)}</details>
     </section>
 
-    ${!s.features.invoices ? '' : `<section class="card" id="rechnungen"><h2>Rechnungen</h2>
+    ${!s.features.invoices ? '' : `<section class="card" id="rechnungen" data-group="rechnungen"><h2>Rechnungen</h2>
       <p class="muted">Rechnungen aus allen Postfächern werden im Sammel-Postfach nach Jahr und Monat abgelegt (z. B. „${esc(cfg.invoices.root)}/2026/2026-11“). Aus anderen Postfächern kommt eine Kopie, das Original wandert dort nach „Sortiert/Rechnungen“. Offene Rechnungen bekommen in Outlook ein Fähnchen.</p>
       <form method="post" action="/einstellungen/rechnungen" class="form two">${csrf(s)}
         <label>Sammel-Postfach<select name="accountId"><option value="0">– Rechnungen nicht sammeln –</option>${options(accounts.map(a => [a.id, accountLabel(a) + ' (' + a.user + ')']), cfg.invoices.accountId)}</select></label>
@@ -729,7 +743,7 @@ export function createApp () {
       </form></section>`}
 
 
-    <section class="card" id="sortieren"><h2>Sortieren</h2>
+    <section class="card" id="sortieren" data-group="sortieren"><h2>Sortieren</h2>
       <form method="post" action="/einstellungen/sortieren" class="form">${csrf(s)}
         <label class="check"><input type="checkbox" name="onlySeen" value="1"${chk(cfg.sorting.onlySeen)}> <span><b>Nur gelesene Mails einsortieren</b> – ungelesene bleiben im Posteingang, bis du sie gelesen hast. Auf Gefahr geprüft werden sie trotzdem sofort.</span></label>
         <p class="muted small">Gefährliche Mails (Phishing, Betrug, gefährliche Anhänge):</p>
@@ -738,14 +752,14 @@ export function createApp () {
         <div class="row"><button class="btn primary">Speichern</button></div>
       </form></section>
 
-    ${s.features.webmail ? `<section class="card" id="mailprogramm"><h2>Mail-Programm</h2>
+    ${s.features.webmail ? `<section class="card" id="mailprogramm" data-group="postfaecher"><h2>Mail-Programm</h2>
       <form method="post" action="/einstellungen/mailprogramm" class="form two">${csrf(s)}
         <label>Am Handy und Tablet nur die Mails der letzten … Tage zeigen<input name="mobileDays" type="number" value="${int(cfg.webmail?.mobileDays, 0, 3650, 14)}" min="0" max="3650"></label>
         <p class="muted small">0 = alle. Ältere Mails bleiben auf dem Server und lassen sich jederzeit mit „Ältere anzeigen“ oder über die Suche öffnen. Postwart speichert keine Mails auf dem Gerät – es lädt nur die angezeigte Liste und die Mail, die du öffnest.</p>
         <div class="row span"><button class="btn primary">Speichern</button></div>
       </form></section>` : ''}
 
-    <section class="card" id="ablauf"><h2>Ablauf</h2>
+    <section class="card" id="ablauf" data-group="sortieren"><h2>Ablauf</h2>
       <form method="post" action="/einstellungen/ablauf" class="form two">${csrf(s)}
         <label>Nachsehen alle … Minuten<input name="intervalMin" type="number" value="${cfg.intervalMin}" min="1" max="1440"></label>
         <label>Mails je Durchlauf tagsüber<input name="batchDay" type="number" value="${cfg.batchDay}" min="1" max="1000"></label>
@@ -761,17 +775,17 @@ export function createApp () {
         <div class="row span"><button class="btn primary">Speichern</button></div>
       </form></section>
 
-    ${!s.features.folders ? `<section class="card" id="ordner"><h2>Ordner</h2><p class="muted">Die Mails werden in diese Ordner unter „${esc(cfg.root)}“ sortiert. Ändern kann sie der Verwalter.</p>
-      <ul>${activeCategories(cfg).map(c => `<li><b>${esc(c.name)}</b> <span class="muted small">${esc(c.desc)}</span></li>`).join('')}</ul></section>` : `<section class="card" id="ordner"><h2>Ordner</h2>
+    ${!s.features.folders ? `<section class="card" id="ordner" data-group="ordner"><h2>Ordner</h2><p class="muted">Die Mails werden in diese Ordner unter „${esc(cfg.root)}“ sortiert. Ändern kann sie der Verwalter.</p>
+      <ul>${activeCategories(cfg).map(c => `<li><b>${esc(c.name)}</b> <span class="muted small">${esc(c.desc)}</span></li>`).join('')}</ul></section>` : `<section class="card" id="ordner" data-group="ordner"><h2>Ordner</h2>
       <p class="muted">Die Ordner liegen unter „${esc(cfg.root)}“ in jedem Postfach und erscheinen in Outlook. Die Beschreibung ist das, was die KI über den Ordner weiß – je genauer, desto besser. Wird ein Name geändert, legt Postwart einen neuen Ordner an; der alte bleibt (in Outlook umbenennen oder löschen).</p>
       <form method="post" action="/einstellungen/ordner" class="form">${csrf(s)}
         <label>Hauptordner<input name="root" value="${esc(cfg.root)}" maxlength="60" required></label>
-        ${cfg.categories.map(c => `<fieldset class="cat"><legend>${esc(c.name)}${c.custom ? ' <span class="pill">eigener Ordner</span>' : ''}${c.system ? ' <span class="pill warn">Sicherheit</span>' : ''}</legend>
+        ${cfg.categories.map(c => `<details class="cat"><summary><b>${esc(c.name)}</b>${c.custom ? ' <span class="pill">eigener Ordner</span>' : ''}${c.system ? ' <span class="pill warn">Sicherheit</span>' : ''}${c.off ? ' <span class="pill">nicht verwendet</span>' : ''}<span class="cat-desc muted small">${esc(c.desc)}</span></summary>
           <label>Name<input name="name_${c.id}" value="${esc(c.name)}" maxlength="60" required></label>
           ${c.system ? `<p class="muted small">${esc(c.desc)} Diesen Ordner füllt nur die Sicherheitsprüfung (Einstellungen → Sicherheit), nie die KI.</p>`
             : `<label>Beschreibung für die KI – was gehört hier rein?<textarea name="desc_${c.id}" rows="2" maxlength="600">${esc(c.desc)}</textarea></label>
           <div class="row wrap"><label class="check"><input type="checkbox" name="off_${c.id}" value="1"${chk(c.off)}> nicht verwenden</label>
-          ${c.custom ? `<label class="check"><input type="checkbox" name="del_${c.id}" value="1"> Ordner entfernen</label>` : ''}</div>`}</fieldset>`).join('')}
+          ${c.custom ? `<label class="check"><input type="checkbox" name="del_${c.id}" value="1"> Ordner entfernen</label>` : ''}</div>`}</details>`).join('')}
         <div class="row"><button class="btn primary">Speichern</button><button class="btn ghost" name="reset" value="1" data-confirm="Namen und Beschreibungen der festen Ordner auf die Vorgaben zurücksetzen? Eigene Ordner bleiben.">Vorgaben</button></div>
       </form>
       <h3>Eigenen Ordner anlegen</h3>
@@ -781,7 +795,7 @@ export function createApp () {
         <div class="row span"><button class="btn primary">Anlegen</button></div>
       </form></section>`}
 
-    <section class="card" id="sicherheit"><h2>Sicherheit</h2>
+    <section class="card" id="sicherheit" data-group="sicherheit"><h2>Sicherheit</h2>
       <p class="muted">Jede Mail wird vor allem anderen geprüft: gefährliche Anhänge (Programme, Makros, getarnte Dateien, Archive mit Passwort), PDFs mit Skripten, gefälschte Absender und Links, nachgemachte Domains, Druck plus Passwortabfrage, Absender-Prüfung des Mailservers (SPF/DKIM/DMARC). Anhänge werden dabei nie geöffnet. Verdächtige Mails kommen nach „${esc(targetLabel('verdacht', cfg))}“, Spam nach „${esc(targetLabel('spam', cfg))}“ – gelöscht wird nichts.</p>
       ${getStatus().dnsWarning ? `<div class="alert bad">Spam-Sperrliste: ${esc(getStatus().dnsWarning)}. Abhilfe: unten einen anderen DNS-Server eintragen und „Speichern &amp; Sperrlisten testen“ – oder die Liste entfernen.</div>` : ''}
       <form method="post" action="/einstellungen/sicherheit" class="form two">${csrf(s)}
@@ -810,7 +824,7 @@ export function createApp () {
           <button class="btn" name="leeren" value="verdacht" data-confirm="Alle Mails im Ordner „${esc(targetLabel('verdacht', cfg))}“ (ohne Fähnchen) in allen scharf geschalteten Postfächern jetzt ${cc.mode === 'delete' ? 'ENDGÜLTIG LÖSCHEN' : 'in den Papierkorb legen'}?">„${esc(targetLabel('verdacht', cfg))}“ jetzt leeren</button></div>
       </form>` })()}</section>
 
-    <section class="card" id="konto"><h2>Konto</h2>
+    <section class="card" id="konto" data-group="konto"><h2>Konto</h2>
       <p>Angemeldet als <b>${esc(s.display)}</b> (${esc(s.name)})${s.admin ? ' · Verwalter' : ''}.</p>
       <h3>Passwort ändern</h3>
       <form method="post" action="/einstellungen/passwort" class="form two">${csrf(s)}
@@ -826,8 +840,8 @@ export function createApp () {
         <input name="code" inputmode="numeric" maxlength="20" required placeholder="Code aus der App" autocomplete="one-time-code">
         <button class="btn" data-confirm="Neue Notfallcodes erzeugen? Die alten gelten dann nicht mehr.">Neue Notfallcodes erzeugen</button></form>
       <p class="muted small">Neues Handy? Bitte den Verwalter, deine Zwei-Faktor-Anmeldung zurückzusetzen – dann richtest du die App bei der nächsten Anmeldung neu ein.</p>
-      <form method="post" action="/abmelden">${csrf(s)}<button class="btn ghost">Abmelden</button></form></section>`
-    res.send(page({ title: 'Einstellungen', body, session: s, path: '/einstellungen', ...flash(req) }))
+      <form method="post" action="/abmelden">${csrf(s)}<button class="btn ghost">Abmelden</button></form></section></div></div>`
+    res.send(page({ title: 'Einstellungen', body, session: s, path: '/einstellungen', wide: true, ...flash(req) }))
   })
 
   app.post('/postfaecher', async (req, res) => {

@@ -1,7 +1,7 @@
 // Kleine HTML-Helfer für die serverseitig erzeugten Seiten (alles maskiert).
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const VERSION = process.env.APP_VERSION || '2.3.0'
+export const VERSION = process.env.APP_VERSION || '2.4.0'
 
 // Oben nur: Mail · Rechnungen · Verwaltung. Alles Übrige steckt in der Verwaltung (zweite Zeile).
 const MANAGE_PATHS = ['/uebersicht', '/mails', '/gelernt', '/protokoll']
@@ -40,7 +40,8 @@ export function page ({ title, body, session, path = '/', msg, err, wide, full }
 <title>${esc(title)} · Postwart</title>
 <link rel="stylesheet" href="/app.css"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <script src="/app.js" defer></script></head>
-<body${full ? ' class="app"' : ''}><header class="top"><a class="brand" href="/"><img src="/icon.svg" alt="" width="28" height="28"><span>Postwart</span></a>${nav}</header>
+<body${full ? ' class="app"' : ''}><header class="top"><a class="brand" href="/"><img src="/icon.svg" alt="" width="28" height="28"><span>Postwart</span></a>${nav}
+<button type="button" class="theme-btn" data-theme-toggle title="Darstellung: automatisch / hell / dunkel" aria-label="Hell oder dunkel umschalten"><span class="ti-auto" title="automatisch"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3v18a9 9 0 0 0 0-18z" fill="currentColor"/></svg></span><span class="ti-light"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span><span class="ti-dark"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></span></button></header>
 ${ok ? subNav(session, path) : ''}
 <main class="${full ? 'main full' : wide ? 'main wide' : 'main'}">
 ${msg ? `<div class="alert ok">${esc(msg)}</div>` : ''}${err ? `<div class="alert bad">${esc(err)}</div>` : ''}

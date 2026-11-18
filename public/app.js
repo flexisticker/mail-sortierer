@@ -103,3 +103,32 @@ document.querySelectorAll('.main.full > .alert.ok').forEach(a => setTimeout(() =
     a.scrollIntoView({ block: 'nearest' })
   })
 })()
+
+// Hell / Dunkel / automatisch (je Gerät)
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('[data-theme-toggle]')) return
+  const root = document.documentElement
+  const cur = root.getAttribute('data-theme') || 'auto'
+  const next = { auto: 'light', light: 'dark', dark: 'auto' }[cur] || 'auto'
+  if (next === 'auto') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', next)
+  document.cookie = `pw_theme=${next}; path=/; max-age=31536000; samesite=lax${location.protocol === 'https:' ? '; secure' : ''}`
+})
+// Einstellungen: Bereiche als Reiter (ohne Skript bleibt alles auf einer Seite)
+;(function () {
+  const nav = document.querySelector('.set-nav')
+  if (!nav) return
+  const secs = [...document.querySelectorAll('.set-body > section[data-group]')]
+  const tabs = [...nav.querySelectorAll('a[data-tab]')]
+  const show = (g, scroll) => {
+    if (!tabs.some(t => t.dataset.tab === g)) g = tabs[0].dataset.tab
+    secs.forEach(x => { x.hidden = x.dataset.group !== g })
+    tabs.forEach(t => t.classList.toggle('on', t.dataset.tab === g))
+    if (scroll) window.scrollTo(0, 0)
+  }
+  const fromHash = () => { const el = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1))); return el && el.dataset.group ? el.dataset.group : null }
+  show(fromHash() || tabs[0].dataset.tab)
+  const h = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1)))
+  if (h) setTimeout(() => h.scrollIntoView({ block: 'start' }), 0)
+  nav.addEventListener('click', (e) => { const a = e.target.closest('a[data-tab]'); if (!a) return; e.preventDefault(); history.replaceState(null, '', a.getAttribute('href')); show(a.dataset.tab, true) })
+  window.addEventListener('hashchange', () => { const g = fromHash(); if (g) show(g) })
+})()

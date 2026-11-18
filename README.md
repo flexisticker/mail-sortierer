@@ -73,6 +73,11 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur versch
 - **Handy und Tablet** zeigen nur die Mails der letzten 14 Tage (Einstellungen → Mail-Programm, 0 = alle), „Ältere anzeigen“ und die Suche gehen über alles.
   Auf dem Gerät wird nichts gespeichert – geladen werden nur die angezeigte Liste und die geöffnete Mail.
 
+## Darstellung (ab 2.4)
+
+- Knopf oben rechts: **automatisch · hell · dunkel** (je Gerät gemerkt).
+- Einstellungen in Bereiche geteilt (Allgemein, Postfächer, Sortieren, Ordner, Rechnungen, Sicherheit, Mein Konto), Ordner als aufklappbare Zeilen.
+
 ## Windows (ab 1.5)
 
 `Postwart-Setup-<Version>.exe` (Download über die Vedly-Zentrale bzw. Action-Artefakt): läuft als Windows-Dienst,

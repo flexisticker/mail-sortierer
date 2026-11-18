@@ -190,3 +190,11 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   app.js setzt Cookie `pw_mobil=1` bei `(max-width: 1000px), (pointer: coarse)` (iPad zählt auch quer), lädt die Liste beim Wechsel einmal neu; `listMessages({ since })` = IMAP-SEARCH SINCE
   (Eingangsdatum, nach UID sortiert). Suche und `alle=1` („Ältere anzeigen“, bleibt beim Öffnen/Zurück in `listQuery`) gehen über alles. Getestet (GreenMail, Playwright PC/iPhone 13/iPad quer):
   PC alle 17, Handy/iPad 15 + Hinweis, „Ältere anzeigen“ 17, Suche findet alte. **Nicht getestet:** echte Geräte.
+- **2.4.0 (18.11.2026): Übersichtlicher + Hell/Dunkel** (Wunsch Michael „klarer nutzbar“). Knopf `.theme-btn` (`data-theme-toggle`, SVG-Symbole) schaltet automatisch → hell → dunkel,
+  Cookie `pw_theme`; Middleware in web.js setzt `data-theme` beim Ausliefern ins `<html>` (kein Flackern, kein Inline-Skript). CSS-Variablen: dunkel unter
+  `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` **und** `:root[data-theme="dark"]` (bei neuen Farben beide Stellen pflegen), `color-scheme`.
+  Mail-Inhalt, Editor und Signatur-Vorschau bleiben bewusst weiß (Mails sind für weißen Hintergrund gestaltet).
+  Einstellungen: Abschnitte tragen `data-group` (allgemein, postfaecher, sortieren, ordner, rechnungen, sicherheit, konto), Seitenmenü `.set-nav`, app.js zeigt nur den Bereich
+  (aus dem `#anker` – bestehende Rücksprünge wie `/einstellungen#rechnungen` landen im richtigen Bereich; ohne Skript alles untereinander). **Neue Abschnitte: id + data-group setzen.**
+  Ordner als `<details class="cat">` (Name + Beschreibung einzeilig). Fehlende Einrichtung bei Rechnungen als `alert info` statt rot, Seite „Mails“ heißt „Sortierung“.
+  Getestet (Playwright, hell/dunkel, 1440/390 px): Umschalten, Neuladen behält Wahl, Bereich aus Anker, Speichern bleibt im Bereich, kein Überlauf auf allen Seiten.
