@@ -45,8 +45,9 @@ function key () {
   const envVal = process.env[KEY_ENV]
   if (envVal) { cached = parseKey(envVal, `Die Variable ${KEY_ENV}`); source = 'env'; return cached }
   if (isWin) {
+    // vorhandene geschützte Datei nie umgehen: lieber Start abbrechen als einen zweiten Schlüssel anlegen
+    if (fs.existsSync(DPAPI_FILE)) { cached = dpapiUnprotect(fs.readFileSync(DPAPI_FILE, 'utf8')); source = 'dpapi'; return cached }
     try {
-      if (fs.existsSync(DPAPI_FILE)) { cached = dpapiUnprotect(fs.readFileSync(DPAPI_FILE, 'utf8')); source = 'dpapi'; return cached }
       const k = readFileKey() || crypto.randomBytes(32)
       writeDpapi(k)
       if (fs.existsSync(KEY_FILE)) fs.rmSync(KEY_FILE)
@@ -55,7 +56,10 @@ function key () {
       console.error('[postwart] Windows-Datenschutz nicht verfügbar, Schlüssel bleibt als Datei:', e.message)
     }
   }
-  if (!fs.existsSync(KEY_FILE)) fs.writeFileSync(KEY_FILE, crypto.randomBytes(32).toString('base64'), { mode: 0o600 })
+  if (!fs.existsSync(KEY_FILE)) {
+    if (sysGet('keyCheck', null)) throw new Error(`Der Schlüssel für die gespeicherten Passwörter fehlt (Variable ${KEY_ENV} oder Datei .schluessel).`)
+    fs.writeFileSync(KEY_FILE, crypto.randomBytes(32).toString('base64'), { mode: 0o600 })
+  }
   cached = readFileKey(); source = 'file'
   return cached
 }
@@ -100,9 +104,10 @@ export function prepareKey (eachUserDb) {
   const check = sysGet('keyCheck', null)
   const fits = (k) => { if (!check) return true; try { return dec(check, k) === 'postwart' } catch { return false } }
   const readOld = () => {
-    try { const f = readFileKey(); if (f) return f } catch { /* kaputt */ }
-    if (isWin && fs.existsSync(DPAPI_FILE)) { try { return dpapiUnprotect(fs.readFileSync(DPAPI_FILE, 'utf8')) } catch { /* nicht lesbar */ } }
-    return null
+    const list = []
+    try { const f = readFileKey(); if (f) list.push(f) } catch { /* kaputt */ }
+    if (isWin && fs.existsSync(DPAPI_FILE)) { try { list.push(dpapiUnprotect(fs.readFileSync(DPAPI_FILE, 'utf8'))) } catch { /* nicht lesbar */ } }
+    return list.find(fits) || list[0] || null
   }
   const envVal = process.env[KEY_ENV]
   if (envVal) {

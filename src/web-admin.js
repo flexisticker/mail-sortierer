@@ -246,6 +246,7 @@ export function registerAdmin (app) {
   })
   app.post('/verwaltung/check/schluessel', homeOnly, (req, res) => {
     if (keySource() !== 'file') return back(res, '/verwaltung/check', { err: 'Der Schlüssel liegt schon nicht mehr im Datenordner.' })
+    res.set('Cache-Control', 'no-store')
     res.send(page({
       title: 'Schlüssel', session: req.session, path: '/verwaltung',
       body: `<section class="card narrow wide-narrow"><h1>Schlüssel für die gespeicherten Passwörter</h1>
