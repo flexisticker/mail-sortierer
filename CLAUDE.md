@@ -213,3 +213,5 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   „Ausgewählte neu einordnen“ / „Nein, nur diese eine“). POST nimmt nur IDs, die `suspectsFrom` liefert, `reassessRecords(ids)` = je Postfach+Ordner UIDs prüfen (sonst per Message-ID)
   und `reassessHarmless`. Rücksprung im Mail-Programm zur Ordnerliste (die „nächste Mail“ kann mit verschoben sein). `/harmlos` steht in den OK_PATHS des Angriffsschutz-Prüfskripts.
   Getestet (GreenMail + Ollama-Mock): 4 Verdachts-Mails → 1 harmlos → Rückfrage mit 3 → 2 ausgewählt → Kunden 3, Verdacht 1; Sortier-Liste ohne weitere → keine Rückfrage.
+- **Betrieb (18.11.2026 abends):** Postwart läuft bei Michael und ist **von außen erreichbar unter `https://postwart.zatti.info`** (NPM → Unraid 192.168.1.10:8110, Anleitung
+  `docs/ZUGRIFF-VON-AUSSEN.md`). Der zwischenzeitliche 502 lag am NPM-Eintrag, nicht an Postwart. Michael: „Alles klappt. Auch von außen.“
