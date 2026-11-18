@@ -162,3 +162,52 @@ fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px
 fieldset legend { font-size: 13px; color: var(--muted); padding: 0 4px; }
 fieldset .check { margin: 4px 0; }
 @media print { .top, .foot, .btn, form { display: none !important; } .codes { font-size: 15pt; } }
+/* ---- Webmail ---- */
+.main.full { max-width: none; padding: 12px 14px 30px; }
+.mail-layout { display: grid; grid-template-columns: 250px 1fr; gap: 14px; align-items: start; }
+.mail-side { position: sticky; top: 10px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; max-height: calc(100vh - 90px); overflow: auto; }
+.mail-folders > summary { font-weight: 600; cursor: pointer; margin-bottom: 8px; }
+.mail-folders ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.mail-folders li a { display: flex; justify-content: space-between; gap: 6px; padding: 5px 8px; border-radius: 8px; color: var(--text); text-decoration: none; font-size: 14px; }
+.mail-folders li a.on { background: color-mix(in srgb, var(--accent) 14%, transparent); font-weight: 600; }
+.mail-folders li a:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.mail-folders li.d1 a { padding-left: 20px; } .mail-folders li.d2 a { padding-left: 32px; } .mail-folders li.d3 a, .mail-folders li.d4 a { padding-left: 44px; }
+.cnt { color: var(--accent); font-size: 12px; }
+.acc-pick select { width: 100%; margin-bottom: 8px; }
+.acc-one { margin-bottom: 8px; }
+.btn.block { display: block; text-align: center; margin-bottom: 4px; }
+.mail-main { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; min-width: 0; }
+.mail-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; }
+.mail-head h1 { margin: 0; font-size: 20px; }
+.mail-tools { padding: 8px 0; border-bottom: 1px solid var(--line); gap: 6px; }
+.mlist { list-style: none; margin: 0; padding: 0; }
+.mlist li { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); padding: 0 4px; }
+.mlist li > a { flex: 1; display: grid; grid-template-columns: minmax(120px, 230px) 1fr auto; gap: 12px; padding: 9px 0; color: var(--text); text-decoration: none; min-width: 0; }
+.mlist li > a:hover .msubj { text-decoration: underline; }
+.mlist .mfrom, .mlist .msubj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mlist .mmeta { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.mlist li.unread .mfrom, .mlist li.unread .msubj { font-weight: 700; }
+.mlist li.unread { border-left: 3px solid var(--accent); }
+.mlist li.danger { background: color-mix(in srgb, var(--bad) 6%, transparent); }
+.mlist li.empty { padding: 20px 4px; }
+.flag { color: var(--bad); }
+.mail-actions { gap: 6px; margin-bottom: 10px; }
+.mail-actions form.inline { display: inline-flex; gap: 6px; }
+.msubject { font-size: 21px; margin: 4px 0 8px; word-break: break-word; }
+.mhead { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0 0 10px; font-size: 14px; }
+.mhead dt { color: var(--muted); } .mhead dd { margin: 0; word-break: break-word; }
+.atts { list-style: none; padding: 8px 10px; margin: 0 0 10px; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.atts .att-bad { color: var(--bad); } .atts .att-warn { color: var(--warn); }
+.imgbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 10px; margin-bottom: 10px; font-size: 13px; color: var(--muted); }
+iframe.mbody { width: 100%; height: calc(100vh - 260px); min-height: 420px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.alert.warn { border-color: var(--warn); color: var(--warn); }
+.alert ul { margin: 6px 0 6px 18px; padding: 0; }
+@media (max-width: 800px) {
+  .mail-layout { grid-template-columns: 1fr; }
+  .mail-side { position: static; max-height: none; }
+  .mail-folders:not([open]) { margin: 0; }
+  .mlist li > a { grid-template-columns: 1fr auto; grid-template-areas: "from meta" "subj subj"; gap: 2px 10px; }
+  .mlist .mfrom { grid-area: from; } .mlist .msubj { grid-area: subj; } .mlist .mmeta { grid-area: meta; }
+  iframe.mbody { height: 70vh; }
+}
+.mail-head form { flex: 1 1 260px; min-width: 0; } .mail-head form input[name=q] { flex: 1; min-width: 0; }

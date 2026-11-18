@@ -17,3 +17,21 @@ document.addEventListener('change', (e) => {
 document.addEventListener('click', (e) => {
   if (e.target.closest('[data-print]')) { e.preventDefault(); window.print() }
 })
+// Auswahlliste schickt das Formular selbst ab (z. B. Postfach wechseln)
+document.addEventListener('change', (e) => {
+  const s = e.target.closest('[data-autosubmit]')
+  if (s && s.form) s.form.submit()
+})
+// Mailliste alle n Sekunden neu laden – nicht, solange etwas ausgewählt oder ein Feld bearbeitet wird
+;(function () {
+  const el = document.querySelector('[data-refresh]')
+  if (!el) return
+  const sec = Math.max(30, Number(el.getAttribute('data-refresh')) || 120)
+  setInterval(() => {
+    if (document.hidden) return
+    if (document.querySelector('input[type=checkbox]:checked') || (document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))) return
+    location.reload()
+  }, sec * 1000)
+})()
+// Ordnerliste am Handy zuklappen
+if (window.innerWidth < 800) document.querySelectorAll('details.mail-folders[open]').forEach(d => d.removeAttribute('open'))

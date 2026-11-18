@@ -11,6 +11,8 @@ import { COOKIE, sessionCookie, cookie, back, int, errText, flash } from './webu
 import { shield, noteVisitor, isHome } from './shield.js'
 import { registerLogin } from './web-login.js'
 import { registerAdmin } from './web-admin.js'
+import { registerMail } from './web-mail.js'
+import { registerCompose } from './web-compose.js'
 import { PLATFORM, getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
@@ -124,6 +126,10 @@ export function createApp () {
   app.use('/einstellungen/aufraeumen', needFeature('cleanup', 'Das Aufräumen'))
   app.use('/einstellungen/ordner', needFeature('folders', 'Das Bearbeiten der Ordner'))
   app.use('/lizenz', (req, res, next) => req.session.admin ? next() : res.status(403).send('Nur für den Verwalter'))
+  app.use('/post', needFeature('webmail', 'Das Webmail'))
+  app.use('/signaturen', needFeature('webmail', 'Das Webmail'))
+  registerCompose(app) // vor registerMail: /post/neu und /post/senden dürfen nicht als Postfach-Nummer gelten
+  registerMail(app)
 
   // --- Übersicht ---
   app.get('/', (req, res) => {
