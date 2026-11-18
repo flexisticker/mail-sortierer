@@ -341,3 +341,7 @@ details.cat > summary > * { min-width: 0; max-width: 100%; }
 .enroll-code { margin-top: 6px; }
 .enroll-code input { font-size: 22px; letter-spacing: .2em; text-align: center; }
 @media (max-width: 700px) { .top:not(:has(.nav)) .theme-btn { right: 12px; } }
+.hlist { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 10px; max-height: 50vh; overflow: auto; }
+.hlist li { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.hlist li:last-child { border-bottom: 0; }
+.hlist .check { align-items: flex-start; }

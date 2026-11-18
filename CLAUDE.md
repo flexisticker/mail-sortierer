@@ -208,3 +208,8 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   KI nicht erreichbar → bleibt/kommt in den Posteingang. `reassessRecord(id)` für die Sortier-Liste (Knopf „ist harmlos“ schickt `harmlos=1`). Webmail-Aktion `harmlos` nutzt es ebenfalls.
   Reiter „Rechnungen“ oben (`session.showInvoices`, Middleware nach der Anmeldung): Freigabe `invoices` **und** (Sammel-Postfach gewählt oder schon Rechnungen da); Hinweis unter Einstellungen → Rechnungen.
   Getestet (GreenMail + Ollama-Mock): Kundenanfrage mit DMARC-Fehler → Verdacht → „ist harmlos“ im Mail-Programm und in der Sortier-Liste → sofort „Kunden“; Reiter erscheint erst nach Wahl des Sammel-Postfachs.
+- **2.7.0 (18.11.2026): Rückfrage „weitere Mails dieses Absenders?“** (Wunsch Michael). Nach „ist harmlos“ (Mail-Programm und Sortier-Liste) prüft `suspectsFrom(sender)`
+  (worker.js: Einträge mit `from_addr`, decision verdacht/spam, status moved/kept/planned); gibt es welche → Seite `/harmlos?absender&ziel&zurueck` (Liste, alle vorausgewählt,
+  „Ausgewählte neu einordnen“ / „Nein, nur diese eine“). POST nimmt nur IDs, die `suspectsFrom` liefert, `reassessRecords(ids)` = je Postfach+Ordner UIDs prüfen (sonst per Message-ID)
+  und `reassessHarmless`. Rücksprung im Mail-Programm zur Ordnerliste (die „nächste Mail“ kann mit verschoben sein). `/harmlos` steht in den OK_PATHS des Angriffsschutz-Prüfskripts.
+  Getestet (GreenMail + Ollama-Mock): 4 Verdachts-Mails → 1 harmlos → Rückfrage mit 3 → 2 ausgewählt → Kunden 3, Verdacht 1; Sortier-Liste ohne weitere → keine Rückfrage.

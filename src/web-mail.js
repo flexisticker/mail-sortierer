@@ -3,7 +3,7 @@ import { page, esc, csrf, options } from './html.js'
 import { listAccounts, getAccount, accountLabel } from './accounts.js'
 import { getConfig, categoryById } from './config.js'
 import { categoryPath, pathString, ensurePath } from './imap.js'
-import { reassessHarmless } from './worker.js'
+import { reassessHarmless, suspectsFrom } from './worker.js'
 import { log } from './db.js'
 import {
   withMail, listFolders, listMessages, readMessage, attachmentsOf, assessForView, cleanMailHtml, textToHtml,
@@ -261,6 +261,9 @@ export function registerMail (app) {
           const r = await reassessHarmless(acc, req.folder, uids, sender.includes('@') ? sender : '')
           folderCache.delete(`${req.session.userId}:${acc.id}`)
           const x = r[0]
+          // Gleich fragen: weitere Mails desselben Absenders in Verdacht/Spam mit neu einordnen?
+          const more = sender.includes('@') ? suspectsFrom(sender).length : 0
+          if (more) return res.redirect(303, `/harmlos?${q({ absender: sender, ziel: x ? x.label : '', zurueck: safe(req.body.liste) || `/post/${acc.id}?${q({ ordner: req.folder })}` })}`)
           if (x && x.moved) return back(res, listUrl, { msg: `Absender gilt als vertrauenswürdig – Mail neu eingeordnet: „${x.label}“.` })
           return back(res, to, { msg: x ? `Warnung entfernt, Absender gilt als vertrauenswürdig – neu eingeordnet: „${x.label}“${acc.mode === 'live' ? '' : ' (Probelauf, nicht verschoben)'}.` : 'Warnung entfernt, Absender gilt als vertrauenswürdig.' })
         }

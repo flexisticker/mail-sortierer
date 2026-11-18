@@ -16,7 +16,7 @@ import { registerCompose } from './web-compose.js'
 import { PLATFORM, getConfig, saveConfig, companyList, activeCategories, targetLabel, cleanFolderName, DEFAULT_CONFIG } from './config.js'
 import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL, manageHome } from './html.js'
-import { reassessRecord, runOnce, isRunning, getStatus, setStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
+import { reassessRecord, reassessRecords, suspectsFrom, runOnce, isRunning, getStatus, setStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { licenseState, activate, checkin, release } from './license.js'
 import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword, smtpOf, saveSmtp } from './accounts.js'
 import { testSmtp } from './compose.js'
@@ -341,13 +341,52 @@ export function createApp () {
   app.post('/mails/:id/korrektur', async (req, res) => {
     try {
       if (req.body.harmlos === '1') {
-        const r = await reassessRecord(int(req.params.id, 1, 1e12, 0))
+        const id = int(req.params.id, 1, 1e12, 0)
+        const sender = (db.prepare('SELECT from_addr FROM mails WHERE id = ?').get(id) || {}).from_addr || ''
+        const r = await reassessRecord(id)
+        if (suspectsFrom(sender, [id]).length) {
+          const to = safeBack(req.body.zurueck, req.body.anker)
+          return res.redirect(303, `/harmlos?${new URLSearchParams({ absender: sender, ziel: r[0] ? r[0].label : '', zurueck: to })}`)
+        }
         return back(res, safeBack(req.body.zurueck, req.body.anker), { msg: r[0] ? `Absender gilt als vertrauenswürdig – neu eingeordnet: „${r[0].label}“.` : 'Absender gilt als vertrauenswürdig.' })
       }
       await correct(int(req.params.id, 1, 1e12, 0), String(req.body.target || ''))
       back(res, safeBack(req.body.zurueck, req.body.anker), { msg: `Geändert auf „${targetLabel(String(req.body.target))}“ – gemerkt.` })
     } catch (e) { back(res, safeBack(req.body.zurueck, req.body.anker), { err: errText(e) }) }
   })
+  // --- Rückfrage nach „ist harmlos“: weitere Mails desselben Absenders mit neu einordnen? ---
+  const safeTo = (v) => (typeof v === 'string' && v.startsWith('/') && !v.startsWith('//') && !v.includes('\\')) ? v.replace(/[?&](ok|fehler)=[^&]*/g, '') : '/'
+  app.get('/harmlos', (req, res) => {
+    const sender = String(req.query.absender || '').toLowerCase().slice(0, 200)
+    const to = safeTo(String(req.query.zurueck || ''))
+    const list = suspectsFrom(sender)
+    if (!list.length) return res.redirect(303, to)
+    const s = req.session
+    const ziel = String(req.query.ziel || '').slice(0, 80)
+    const body = `<section class="card narrow wide-narrow"><h1>Weitere Mails von diesem Absender?</h1>
+      ${ziel ? `<div class="alert ok">Erledigt: Die Mail liegt jetzt in „${esc(ziel)}“, <b>${esc(sender)}</b> gilt als vertrauenswürdig.</div>` : ''}
+      <p>Von <b>${esc(sender)}</b> liegen noch <b>${list.length}</b> Mail(s) in „${esc(targetLabel('verdacht'))}“ bzw. „${esc(targetLabel('spam'))}“. Sollen die gleich mit neu eingeordnet werden?</p>
+      <form method="post" action="/harmlos" class="form">${csrf(s)}<input type="hidden" name="zurueck" value="${esc(to)}"><input type="hidden" name="absender" value="${esc(sender)}">
+        <label class="check"><input type="checkbox" data-all="hsel" checked> <b>Alle auswählen</b></label>
+        <ul class="hlist">${list.map(r => `<li><label class="check"><input type="checkbox" class="hsel" name="ids" value="${r.id}" checked> <span><b>${esc(r.subject || '(ohne Betreff)')}</b><br><span class="muted small">${fmtDate(r.date)} · ${esc(targetLabel(r.decision))}</span></span></label></li>`).join('')}</ul>
+        <div class="row wrap"><button class="btn primary" name="aktion" value="alle">Ausgewählte neu einordnen</button><a class="btn ghost" href="${esc(to)}">Nein, nur diese eine</a></div>
+      </form></section>`
+    res.send(page({ title: 'Weitere Mails', body, session: s, path: '/post' }))
+  })
+  app.post('/harmlos', async (req, res) => {
+    const to = safeTo(String(req.body.zurueck || ''))
+    const sender = String(req.body.absender || '').toLowerCase()
+    const allowed = new Set(suspectsFrom(sender).map(r => r.id))
+    const ids = [].concat(req.body.ids || []).map(x => int(x, 1, 1e12, 0)).filter(id => allowed.has(id))
+    if (!ids.length) return back(res, to, { msg: 'Nichts weiter geändert.' })
+    try {
+      const r = await reassessRecords(ids)
+      const by = {}
+      for (const x of r) by[x.label] = (by[x.label] || 0) + 1
+      back(res, to, { msg: `${r.length} Mail(s) neu eingeordnet${r.length ? ': ' + Object.entries(by).map(([l, n]) => `${l} (${n})`).join(', ') : ''}.` })
+    } catch (e) { back(res, to, { err: errText(e) }) }
+  })
+
   app.post('/mails/:id/passt', (req, res) => {
     try { confirm(int(req.params.id, 1, 1e12, 0)); back(res, safeBack(req.body.zurueck, req.body.anker), { msg: 'Bestätigt – gemerkt.' }) } catch (e) { back(res, safeBack(req.body.zurueck, req.body.anker), { err: errText(e) }) }
   })

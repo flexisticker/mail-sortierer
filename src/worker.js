@@ -461,6 +461,43 @@ export async function reassessHarmless (acc0, folder, uids, sender) {
   if (needRun) runOnce('nach „ist harmlos“')
   return out
 }
+/** Weitere Mails desselben Absenders, die noch als Verdacht/Spam gelten (für die Rückfrage nach „ist harmlos“) */
+export function suspectsFrom (sender, exceptIds = []) {
+  const addr = String(sender || '').toLowerCase()
+  if (!addr.includes('@')) return []
+  const skip = new Set(exceptIds.map(Number))
+  return db.prepare("SELECT * FROM mails WHERE lower(from_addr) = ? AND decision IN ('verdacht', 'spam') AND status IN ('moved', 'kept', 'planned') AND folder IS NOT NULL ORDER BY date DESC LIMIT 300")
+    .all(addr).filter(r => !skip.has(r.id))
+}
+/** Mehrere Einträge auf einmal „harmlos“ (je Postfach und Ordner eine Verbindung) */
+export async function reassessRecords (ids) {
+  const recs = ids.map(id => byId.get(id)).filter(r => r && r.folder && (r.decision === 'verdacht' || r.decision === 'spam'))
+  const groups = new Map()
+  for (const r of recs) { const k = r.account_id + '\u0000' + r.folder; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r) }
+  const out = []
+  for (const list of groups.values()) {
+    const acc = getAccount(list[0].account_id)
+    if (!acc) continue
+    const folder = list[0].folder
+    let uids = []
+    try {
+      uids = await withClient(acc, async (client) => {
+        const lock = await client.getMailboxLock(folder)
+        try {
+          const found = []
+          for (const r of list) {
+            const ok = r.uid && ((await client.search({ uid: String(r.uid) }, { uid: true })) || []).length
+            const u = ok ? r.uid : (await findByMsgId(client, r.msgid))[0]
+            if (u) found.push(u); else upd(r.id, { status: 'gone', error: 'nicht mehr im Ordner' })
+          }
+          return found
+        } finally { lock.release() }
+      })
+    } catch (e) { log('warn', `Neu einordnen: Ordner „${folder}“ – ${e.message}`); continue }
+    if (uids.length) out.push(...await reassessHarmless(acc, folder, uids, list[0].from_addr))
+  }
+  return out
+}
 /** Variante für einen Eintrag aus der Sortier-Liste */
 export async function reassessRecord (id) {
   const rec = byId.get(id)
