@@ -222,6 +222,13 @@ export const db = new Proxy({}, {
   }
 })
 
+/** fn(db) für jede Nutzer-Datenbank außer der Haupt-Datenbank (z. B. Schlüssel-Umzug) */
+export function eachUserDb (fn) {
+  for (const u of sysdb.prepare("SELECT * FROM users WHERE data <> ''").all()) {
+    try { fn(dbFor(u)) } catch (e) { console.error('[postwart] Datenbank von', u.name, ':', e.message) }
+  }
+}
+
 /** Datenbank eines Nutzers schließen und Ordner löschen (Nutzer entfernt) */
 export function dropUserData (user) {
   const rel = user && user.data ? String(user.data) : ''

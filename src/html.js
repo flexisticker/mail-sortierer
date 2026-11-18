@@ -1,7 +1,7 @@
 // Kleine HTML-Helfer für die serverseitig erzeugten Seiten (alles maskiert).
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-export const VERSION = process.env.APP_VERSION || '2.0.0'
+export const VERSION = process.env.APP_VERSION || '2.1.0'
 
 // Menü je nach Rolle und freigegebenen Bereichen
 function navItems (session) {
@@ -25,15 +25,15 @@ export function page ({ title, body, session, path = '/', msg, err, wide, full }
     : ''
   return `<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} · Mail-Sortierer</title>
+<title>${esc(title)} · Postwart</title>
 <link rel="stylesheet" href="/app.css"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <script src="/app.js" defer></script></head>
-<body><header class="top"><a class="brand" href="/"><img src="/icon.svg" alt="" width="28" height="28"><span>Mail-Sortierer</span></a>${nav}</header>
+<body><header class="top"><a class="brand" href="/"><img src="/icon.svg" alt="" width="28" height="28"><span>Postwart</span></a>${nav}</header>
 <main class="${full ? 'main full' : wide ? 'main wide' : 'main'}">
 ${msg ? `<div class="alert ok">${esc(msg)}</div>` : ''}${err ? `<div class="alert bad">${esc(err)}</div>` : ''}
 ${body}
 </main>
-${full ? '' : `<footer class="foot">Mail-Sortierer ${esc(VERSION)} · lokale KI, nichts verlässt dein Netz</footer>`}
+${full ? '' : `<footer class="foot">Postwart ${esc(VERSION)} · sortiert, schützt und räumt auf – mit lokaler KI, nichts verlässt dein Netz</footer>`}
 </body></html>`
 }
 

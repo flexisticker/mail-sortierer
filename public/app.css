@@ -229,3 +229,4 @@ select.tb { padding: 0 4px; } .tb:hover { border-color: var(--accent); }
 .compose textarea[name=text] { font: 14px/1.5 ui-monospace, Consolas, monospace; }
 .sig-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
 .sig-preview { margin-top: 8px; padding: 8px; background: #fff; color: #1d1d1f; border-radius: 8px; font-size: 14px; } .sig-preview img { max-width: 260px; height: auto; }
+.card.narrow.wide-narrow { max-width: 640px; }

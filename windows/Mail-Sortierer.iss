@@ -1,4 +1,4 @@
-﻿; Mail-Sortierer – Windows-Setup (Inno Setup 6). Baut die GitHub Action (Job „windows“ in .github/workflows/docker.yml):
+﻿; Postwart (früher Mail-Sortierer) – Windows-Setup. Sichtbarer Name Postwart; Ordner, Dienst-ID, Firewall-Regel bleiben technisch „Mail-Sortierer“ (Inno Setup 6). Baut die GitHub Action (Job „windows“ in .github/workflows/docker.yml):
 ; windows/build.ps1 legt Node.js, Programm und Dienst-Wrapper (WinSW) unter windows\build ab, danach
 ;   iscc /DAppVersion=… /DAppBuild=… /DAppCommit=… windows\Mail-Sortierer.iss
 ; Programm: C:\Program Files\Mail-Sortierer, Daten: C:\ProgramData\Mail-Sortierer (bleiben bei Update und – auf Wunsch – bei Deinstallation).
@@ -15,22 +15,22 @@
 
 [Setup]
 AppId={{4E1C7B2A-93D5-4C1E-8A6F-2B7D9E0F3A51}
-AppName=Mail-Sortierer
+AppName=Postwart
 AppVersion={#AppVersion}
-AppVerName=Mail-Sortierer {#AppVersion}
+AppVerName=Postwart {#AppVersion}
 AppPublisher=Vedly
 AppPublisherURL=https://vedly.de
 AppSupportURL=https://vedly.de
 VersionInfoVersion={#AppVersion}
-VersionInfoDescription=Mail-Sortierer Setup
+VersionInfoDescription=Postwart Setup
 DefaultDirName={autopf}\Mail-Sortierer
-DefaultGroupName=Mail-Sortierer
+DefaultGroupName=Postwart
 DisableProgramGroupPage=yes
 OutputDir=..\dist-windows
-OutputBaseFilename=Mail-Sortierer-Setup-{#AppVersion}
+OutputBaseFilename=Postwart-Setup-{#AppVersion}
 SetupIconFile=mail-sortierer.ico
 UninstallDisplayIcon={app}\mail-sortierer.ico
-UninstallDisplayName=Mail-Sortierer
+UninstallDisplayName=Postwart
 WizardSmallImageFile=wizard-s100.bmp,wizard-s150.bmp,wizard-s200.bmp
 WizardImageFile=wizard-l100.bmp,wizard-l150.bmp,wizard-l200.bmp
 Compression=lzma2/max
@@ -64,28 +64,35 @@ Source: "notfall-zugang.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "mail-sortierer.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [INI]
-Filename: "{app}\Mail-Sortierer.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://localhost:{code:GetPort}/"
-Filename: "{app}\Mail-Sortierer.url"; Section: "InternetShortcut"; Key: "IconFile"; String: "{app}\mail-sortierer.ico"
-Filename: "{app}\Mail-Sortierer.url"; Section: "InternetShortcut"; Key: "IconIndex"; String: "0"
+Filename: "{app}\Postwart.url"; Section: "InternetShortcut"; Key: "URL"; String: "http://localhost:{code:GetPort}/"
+Filename: "{app}\Postwart.url"; Section: "InternetShortcut"; Key: "IconFile"; String: "{app}\mail-sortierer.ico"
+Filename: "{app}\Postwart.url"; Section: "InternetShortcut"; Key: "IconIndex"; String: "0"
 
 [Icons]
-Name: "{group}\Mail-Sortierer öffnen"; Filename: "{app}\Mail-Sortierer.url"; IconFilename: "{app}\mail-sortierer.ico"
+Name: "{group}\Postwart öffnen"; Filename: "{app}\Postwart.url"; IconFilename: "{app}\mail-sortierer.ico"
 Name: "{group}\Daten-Ordner"; Filename: "{commonappdata}\Mail-Sortierer"
 Name: "{group}\Notfall-Zugang (Passwort vergessen)"; Filename: "{app}\notfall-zugang.cmd"; IconFilename: "{app}\mail-sortierer.ico"
-Name: "{group}\Mail-Sortierer deinstallieren"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Mail-Sortierer"; Filename: "{app}\Mail-Sortierer.url"; IconFilename: "{app}\mail-sortierer.ico"; Tasks: desktopicon
+Name: "{group}\Postwart deinstallieren"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Postwart"; Filename: "{app}\Postwart.url"; IconFilename: "{app}\mail-sortierer.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist
 Filename: "https://ollama.com/download/windows"; Description: "Downloadseite von „Ollama für Windows“ öffnen (lokale KI – nötig, falls noch nicht installiert)"; Flags: shellexec postinstall skipifsilent nowait unchecked
-Filename: "{app}\Mail-Sortierer.url"; Description: "Mail-Sortierer jetzt im Browser öffnen"; Flags: shellexec postinstall skipifsilent nowait
+Filename: "{app}\Postwart.url"; Description: "Postwart jetzt im Browser öffnen"; Flags: shellexec postinstall skipifsilent nowait
 
 [UninstallRun]
 Filename: "{app}\Mail-Sortierer-Dienst.exe"; Parameters: "stop"; Flags: runhidden waituntilterminated; RunOnceId: "StopService"
 Filename: "{app}\Mail-Sortierer-Dienst.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveService"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Mail-Sortierer"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveFirewall"
 
+[InstallDelete]
+; Alte Verknüpfungen aus der Zeit als „Mail-Sortierer“
+Type: files; Name: "{app}\Mail-Sortierer.url"
+Type: filesandordirs; Name: "{autoprograms}\Mail-Sortierer"
+Type: files; Name: "{autodesktop}\Mail-Sortierer.lnk"
+
 [UninstallDelete]
+Type: files; Name: "{app}\Postwart.url"
 Type: files; Name: "{app}\Mail-Sortierer.url"
 Type: files; Name: "{app}\Mail-Sortierer-Dienst.xml"
 Type: filesandordirs; Name: "{app}\app"
@@ -121,15 +128,15 @@ end;
 procedure InitializeWizard();
 begin
   PortPage := CreateInputQueryPage(wpSelectDir, 'Anschluss (Port)',
-    'Unter welcher Adresse soll der Mail-Sortierer erreichbar sein?',
-    'Der Mail-Sortierer läuft als Windows-Dienst und wird im Browser geöffnet: http://localhost:<Port>. ' +
+    'Unter welcher Adresse soll Postwart erreichbar sein?',
+    'Postwart läuft als Windows-Dienst und wird im Browser geöffnet: http://localhost:<Port>. ' +
     'Nur ändern, wenn der Port auf diesem PC schon von einem anderen Programm genutzt wird.');
   PortPage.Add('Port:', False);
   PortPage.Values[0] := GetPreviousData('Port', '8110');
 
   ScanPage := CreateInputDirPage(wpSelectTasks, 'Scanner-Ordner',
     'In welchen Ordner legt Ihr Scanner die PDF-Dateien?',
-    'Der Mail-Sortierer holt Rechnungen von dort ab, legt sie nach Jahr und Monat im Rechnungs-Postfach ab und verschiebt die Datei danach nach „erledigt“ – gelöscht wird nichts.' + #13#10 +
+    'Postwart holt Rechnungen von dort ab, legt sie nach Jahr und Monat im Rechnungs-Postfach ab und verschiebt die Datei danach nach „erledigt“ – gelöscht wird nichts.' + #13#10 +
     'Netzwerkordner bitte als \\Server\Freigabe angeben (Laufwerksbuchstaben sieht der Dienst nicht) und Benutzer/Passwort später unter Einstellungen → Rechnungen eintragen.',
     False, '');
   ScanPage.Add('Scanner-Ordner:');
@@ -248,8 +255,8 @@ begin
   SetArrayLength(L, 21);
   L[0] := '<service>';
   L[1] := '  <id>Mail-Sortierer</id>';
-  L[2] := '  <name>Mail-Sortierer</name>';
-  L[3] := '  <description>Mail-Sortierer – sortiert Postfächer mit lokaler KI (http://localhost:' + GetPort('') + ')</description>';
+  L[2] := '  <name>Postwart</name>';
+  L[3] := '  <description>Postwart – sortiert Postfächer mit lokaler KI (http://localhost:' + GetPort('') + ')</description>';
   L[4] := '  <executable>%BASE%\node\node.exe</executable>';
   L[5] := '  <arguments>--no-warnings "%BASE%\app\src\index.js"</arguments>';
   L[6] := '  <workingdirectory>%BASE%\app</workingdirectory>';
@@ -312,7 +319,7 @@ begin
     RunService('uninstall');
     SecureDataDir();
     if RunService('install') <> 0 then
-      SuppressibleMsgBox('Der Windows-Dienst „Mail-Sortierer“ konnte nicht eingerichtet werden. Bitte das Setup erneut als Administrator ausführen.', mbError, MB_OK, IDOK);
+      SuppressibleMsgBox('Der Windows-Dienst „Postwart“ konnte nicht eingerichtet werden. Bitte das Setup erneut als Administrator ausführen.', mbError, MB_OK, IDOK);
     RunService('start');
     SetupFirewall();
   end;
@@ -324,12 +331,12 @@ begin
   begin
     if DirExists(DataDir()) then
     begin
-      if SuppressibleMsgBox('Der Mail-Sortierer wurde entfernt.' + #13#10#13#10 +
+      if SuppressibleMsgBox('Postwart wurde entfernt.' + #13#10#13#10 +
         'Die Daten (Einstellungen, Gelerntes, Rechnungsbelege) liegen weiterhin unter' + #13#10 + DataDir() + #13#10#13#10 +
         'Sollen diese Daten ENDGÜLTIG gelöscht werden? Ihre Mails im Postfach bleiben in jedem Fall unverändert.',
         mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
       begin
-        if SuppressibleMsgBox('Wirklich alle Daten des Mail-Sortierers unwiderruflich löschen?', mbError, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+        if SuppressibleMsgBox('Wirklich alle Daten von Postwart unwiderruflich löschen?', mbError, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
           DelTree(DataDir(), True, True, True);
       end;
     end;

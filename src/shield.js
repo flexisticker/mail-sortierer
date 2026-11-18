@@ -6,6 +6,7 @@ import { createShield, DEFAULT_SHIELD, KINDS, parseAllow, normIp, formFields as 
 import { updateState } from './updates.js'
 import { VERSION } from './html.js'
 import { licenseState } from './license.js'
+import { keySource, KEY_ENV } from './secrets.js'
 
 export { KINDS }
 export const shield = createShield({
@@ -90,8 +91,13 @@ export function selfCheck () {
   if (seen.public) {
     add(seen.http && !seen.https ? 'bad' : 'ok', seen.https ? 'Zugriff von außen über HTTPS' : 'Zugriff von außen ohne HTTPS', seen.https ? 'Der Proxy meldet HTTPS – Anmeldedaten und Mails gehen verschlüsselt über das Internet.' : 'Anfragen kommen unverschlüsselt an. Im Nginx Proxy Manager „Force SSL“ einschalten.')
     add('ok', 'Echte Besucher-Adressen kommen an', `Der Proxy reicht die IP der Besucher weiter – Sperren treffen den Richtigen. Zuletzt von außen: ${fmt(seen.lastPublic)}.`)
-  } else if (seen.private > 30) add('info', 'Bisher nur Zugriffe aus dem Heimnetz', `Seit ${fmt(seen.since)} kamen alle ${seen.private} Anfragen aus dem Heimnetz. Ist der Sortierer schon über den Proxy freigegeben, kommt die echte IP nicht an (X-Forwarded-For fehlt) – dann wirken Sperren nicht.`)
+  } else if (seen.private > 30) add('info', 'Bisher nur Zugriffe aus dem Heimnetz', `Seit ${fmt(seen.since)} kamen alle ${seen.private} Anfragen aus dem Heimnetz. Ist Postwart schon über den Proxy freigegeben, kommt die echte IP nicht an (X-Forwarded-For fehlt) – dann wirken Sperren nicht.`)
   else add('info', 'Zugriff von außen noch nicht geprüft', 'Seit dem letzten Neustart kamen noch keine Anfragen von außen.')
+  // Schlüssel der gespeicherten Passwörter
+  const ks = keySource()
+  if (ks === 'env') add('ok', 'Passwort-Schlüssel getrennt abgelegt', `Der Schlüssel kommt aus der Variable ${KEY_ENV} – eine Kopie des Datenordners allein reicht nicht, um die Postfach-Passwörter zu lesen.`)
+  else if (ks === 'dpapi') add('ok', 'Passwort-Schlüssel mit Windows-Datenschutz geschützt', 'Der Schlüssel ist an diesen Rechner gebunden – auf einem anderen Rechner ist eine Kopie des Datenordners unlesbar.')
+  else add('warn', 'Passwort-Schlüssel liegt im Datenordner', `Wer den ganzen Datenordner (z. B. eine Sicherung) bekommt, kann die Postfach-Passwörter entschlüsseln. Besser: Schlüssel als Variable ${KEY_ENV} im Container eintragen (unten „Schlüssel anzeigen“).`)
   // Updates
   const up = updateState()
   if (up && up.update) add('warn', 'Update verfügbar', `Installiert ${VERSION}, verfügbar ${up.latest}. Sicherheitskorrekturen kommen mit den Updates (Unraid: „Check for Updates“ → „apply update“).`)

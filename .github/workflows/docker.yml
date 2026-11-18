@@ -137,7 +137,7 @@ jobs:
           repo="ghcr.io/${{ github.repository_owner }}/mail-sortierer"
           if [ "${{ github.ref_name }}" = "main" ]; then tag="windows"; else tag="windows-$(echo '${{ github.ref_name }}' | tr '/' '-')"; fi
           cd dist-windows
-          file=$(ls Mail-Sortierer-Setup-*.exe | head -n1)
+          file=$(ls Postwart-Setup-*.exe | head -n1)
           oras push "$repo:$tag" \
             --artifact-type application/vnd.mail-sortierer.windows-setup \
             --annotation "org.opencontainers.image.version=$version" \

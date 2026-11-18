@@ -1,5 +1,5 @@
 @echo off
-rem Mail-Sortierer – Notfall-Zugang: setzt ein neues Passwort (braucht Administratorrechte).
+rem Postwart – Notfall-Zugang: setzt ein neues Passwort (braucht Administratorrechte).
 net session >nul 2>&1 || (powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath '%~f0'" & exit /b)
 cd /d "%~dp0app"
 set DATA_DIR=%ProgramData%\Mail-Sortierer\data

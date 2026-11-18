@@ -1,5 +1,6 @@
-// Mail-Sortierer – Start
-import { kvGet, kvSet } from './db.js'
+// Postwart (früher Mail-Sortierer) – Start
+import { kvGet, kvSet, eachUserDb } from './db.js'
+import { prepareKey } from './secrets.js'
 import { isExempt, checkin } from './license.js'
 import { createApp } from './web.js'
 import { startScheduler } from './worker.js'
@@ -8,6 +9,12 @@ import { VERSION } from './html.js'
 import { startUpdateCheck } from './updates.js'
 
 const PORT = Number(process.env.PORT) || 8080
+
+// Schlüssel für die gespeicherten Passwörter prüfen bzw. umziehen (Variable POSTWART_SCHLUESSEL) – bei falschem Schlüssel nicht starten
+try { const src = prepareKey(eachUserDb); console.log(`[postwart] Schlüssel für Passwörter: ${{ env: 'Variable POSTWART_SCHLUESSEL', dpapi: 'Windows-Datenschutz', file: 'Datei im Datenordner' }[src]}`) } catch (e) {
+  console.error('[postwart] ' + e.message)
+  process.exit(1)
+}
 
 // Ab 1.5.0 sind die Vorgaben neutral (nichts vorausgefüllt). Bei der Eigeninstallation die bisherigen Vorgaben behalten,
 // falls sie nie ausdrücklich gespeichert wurden.
@@ -25,7 +32,7 @@ if (isExempt() && !kvGet('neutralDefaultsMigrated')) {
 }
 const app = createApp()
 app.listen(PORT, () => {
-  log('info', `Mail-Sortierer ${VERSION} gestartet (Port ${PORT})`)
+  log('info', `Postwart ${VERSION} gestartet (Port ${PORT})`)
   startScheduler()
   startUpdateCheck()
   // Lizenz bei der Vedly-Zentrale erneuern (prüft selbst, ob es nach 7 Tagen wieder nötig ist)

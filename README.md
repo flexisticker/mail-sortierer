@@ -1,4 +1,6 @@
-# Mail-Sortierer
+# Postwart
+
+*(früher „Mail-Sortierer“ – Repository, Image und Windows-Ordner heißen technisch weiter so.)*
 
 Sortiert das IMAP-Postfach mit einer **lokalen KI (Ollama)** in Ordner und lernt aus deinen Korrekturen.
 Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur verschoben (außer du schaltest das Aufräumen von Spam/Verdacht ein).
@@ -61,9 +63,9 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur versch
 
 ## Windows (ab 1.5)
 
-`Mail-Sortierer-Setup-<Version>.exe` (Download über die Vedly-Zentrale bzw. Action-Artefakt): läuft als Windows-Dienst,
+`Postwart-Setup-<Version>.exe` (Download über die Vedly-Zentrale bzw. Action-Artefakt): läuft als Windows-Dienst,
 Browser `http://localhost:8110`, Scanner-Ordner im Setup wählbar, Daten unter `C:\ProgramData\Mail-Sortierer`.
-Für die KI „Ollama für Windows“ installieren. Lizenz: Vedly-Lizenzschlüssel mit Modul „Mail-Sortierer“ (30 Tage Test).
+Für die KI „Ollama für Windows“ installieren. Lizenz: Vedly-Lizenzschlüssel mit Modul „Postwart“ (in der Zentrale `mailsort`) (30 Tage Test).
 
 ## Einrichten auf Unraid
 
@@ -92,3 +94,15 @@ In Unraid: Docker → „Check for Updates“ → „apply update“. Daten blei
 npm ci
 DATA_DIR=./data PORT=8199 npm start
 ```
+
+## Passwörter verschlüsselt (ab 2.1)
+
+Postfach-, SMTP- und Lexware-Zugänge sowie die 2FA-Geheimnisse liegen nur **verschlüsselt** (AES-256-GCM) in der Datenbank.
+Der Schlüssel liegt **getrennt** von den Daten:
+
+- **Docker/Unraid:** Variable `POSTWART_SCHLUESSEL`. Wert in Postwart unter Verwaltung → Sicherheits-Check → „Schlüssel anzeigen“
+  (nur aus dem Heimnetz), in Unraid als Variable eintragen, Container neu starten – die Schlüsseldatei im Datenordner wird dann gelöscht.
+  **Variable nie ändern oder löschen** und den Wert getrennt von der Sicherung aufbewahren (Passwort-Manager/Papier).
+- **Windows:** automatisch mit Windows-DPAPI (Rechner-Schlüssel), Datei `.schluessel.dpapi`.
+- Ohne beides: Datei `.schluessel` im Datenordner (Sicherheits-Check warnt).
+- Passt der Schlüssel nicht zu den gespeicherten Passwörtern, **startet Postwart nicht** (statt still Zugänge zu verlieren).

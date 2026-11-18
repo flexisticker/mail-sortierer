@@ -1,4 +1,4 @@
-# Mail-Sortierer – sortiert ein IMAP-Postfach mit einer lokalen KI (Ollama)
+# Postwart (früher Mail-Sortierer) – sortiert Postfächer mit lokaler KI, schützt vor gefährlichen Mails, Webmail
 FROM node:22-slim
 # Mindestversion Node.js (Sicherheitskorrekturen), wie bei Vedly
 ARG NODE_MIN=22.23.5

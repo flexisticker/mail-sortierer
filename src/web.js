@@ -205,7 +205,7 @@ export function createApp () {
       </section>
       <section class="card"><h2>Gelernt</h2>
         <dl class="facts"><dt>Feste Regeln</dt><dd>${rules}</dd><dt>Regel-Vorschläge</dt><dd>${suggestions}</dd><dt>Beispiele aus Korrekturen</dt><dd>${corrections}</dd></dl>
-        <p class="muted">Ziehst du in Outlook eine Mail in einen anderen Ordner (oder zurück in den Posteingang), merkt sich der Sortierer das beim nächsten Durchlauf – in allen Postfächern.</p>
+        <p class="muted">Ziehst du in Outlook eine Mail in einen anderen Ordner (oder zurück in den Posteingang), merkt sich Postwart das beim nächsten Durchlauf – in allen Postfächern.</p>
         <div class="row wrap"><a class="btn" href="/gelernt">Ansehen</a>
         <form method="post" action="/aktion/neu-pruefen">${csrf(s)}<button class="btn" data-confirm="Unsichere Mails im Posteingang beim nächsten Durchlauf neu einordnen lassen?">Unsichere neu einordnen</button></form></div>
       </section>
@@ -380,7 +380,7 @@ export function createApp () {
     </section>
 
     <section class="card"><h2>Rechnungen – gelernt</h2>
-      <p class="muted">Jede geprüfte Rechnung wird gemerkt: korrigierte Angaben (Lieferant, Worum geht’s, Firma, Datum …) und deine Entscheidung. Beim nächsten Beleg desselben Absenders übernimmt der Sortierer Lieferantenname und Firma und gibt der KI diese Beispiele mit.</p>
+      <p class="muted">Jede geprüfte Rechnung wird gemerkt: korrigierte Angaben (Lieferant, Worum geht’s, Firma, Datum …) und deine Entscheidung. Beim nächsten Beleg desselben Absenders übernimmt Postwart Lieferantenname und Firma und gibt der KI diese Beispiele mit.</p>
       <div class="table-wrap"><table class="tbl"><thead><tr><th>Datum</th><th>Absender</th><th>Gemerkt</th><th></th></tr></thead><tbody>
       ${invEx.map(e => `<tr><td class="nowrap">${fmtDate(e.created_at)}</td><td class="small">${esc(e.from_addr || 'Scan')}</td>
         <td><b>${esc(e.supplier || '?')}</b>${e.brand ? ` <span class="pill brand">${esc(e.brand)}</span>` : ''} <span class="pill">${esc({ business: 'geschäftlich', private: 'privat', noinvoice: 'keine Rechnung', edit: 'Angaben korrigiert' }[e.decision] || e.decision)}</span>
@@ -633,7 +633,7 @@ export function createApp () {
       return `<section class="card" id="lizenz"><h2>Lizenz</h2>
       <p>Status: <span class="pill ${L.state === 'active' ? 'good' : L.full ? 'warn' : 'bad'}">${esc(label)}</span>${L.license ? ` · ${esc(L.license.company)} · Schlüssel …${esc(L.license.keyHint)}${L.license.validUntil ? ' · gültig bis ' + esc(new Date(L.license.validUntil).toLocaleDateString('de-DE')) : ''}` : ''}</p>
       ${L.message ? `<p class="${L.full ? 'muted' : 'bad'}">${esc(L.message)}</p>` : ''}
-      <p class="muted small">Der Mail-Sortierer wird über die Vedly-Lizenz freigeschaltet (Modul „Mail-Sortierer“). Ohne Lizenz läuft nach dem Test nur noch der Probelauf. Installations-ID: <code>${esc(L.installId)}</code></p>
+      <p class="muted small">Postwart wird über die Vedly-Lizenz freigeschaltet (Modul „Postwart“). Ohne Lizenz läuft nach dem Test nur noch der Probelauf. Installations-ID: <code>${esc(L.installId)}</code></p>
       ${L.state === 'active' ? `<div class="row wrap"><form method="post" action="/lizenz/pruefen">${csrf(s)}<button class="btn">Jetzt bei der Zentrale prüfen</button></form>
         <form method="post" action="/lizenz/freigeben">${csrf(s)}<button class="btn ghost" data-confirm="Lizenz auf diesem Rechner freigeben (z. B. vor einem PC-Wechsel)? Danach nur noch Probelauf.">Lizenz freigeben</button></form></div>`
         : `<form method="post" action="/lizenz/aktivieren" class="form two">${csrf(s)}
@@ -684,7 +684,7 @@ export function createApp () {
           <span class="pill ${a.mode === 'live' ? 'good' : 'warn'}">${a.mode === 'live' ? 'Scharf' : 'Probelauf'}</span>${a.enabled ? '' : ' <span class="pill">aus</span>'}${target && target.id === a.id ? ' <span class="pill info">Rechnungen</span>' : ''}</summary>
         ${accountForm(a)}
         ${s.features.webmail ? smtpForm(a) : ''}
-        <form method="post" action="/postfaecher/${a.id}/loeschen" class="row">${csrf(s)}<button class="btn ghost sm" data-confirm="${esc(accountLabel(a))} aus dem Sortierer entfernen? Im Postfach selbst bleibt alles, wie es ist.">Postfach entfernen</button></form>
+        <form method="post" action="/postfaecher/${a.id}/loeschen" class="row">${csrf(s)}<button class="btn ghost sm" data-confirm="${esc(accountLabel(a))} aus Postwart entfernen? Im Postfach selbst bleibt alles, wie es ist.">Postfach entfernen</button></form>
       </details>`).join('')}
       <details class="acc"${accounts.length ? '' : ' open'}><summary><b>+ Postfach hinzufügen</b></summary>${accountForm(null)}</details>
     </section>
@@ -704,7 +704,7 @@ export function createApp () {
         ${PLATFORM === 'windows' ? `<label>Scanner-Ordner<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="260" placeholder="z. B. C:\\Scans oder \\\\NAS\\scan"></label>
         <label>Benutzer für die Netzwerkfreigabe (nur bei \\\\…)<input name="scanUser" value="${esc(cfg.invoices.scanUser)}" maxlength="120" autocomplete="off"></label>
         <label>Passwort der Freigabe${hasSecret('scanPassword') ? ' <span class="pill good">gespeichert</span>' : ''}<input name="scanPass" type="password" autocomplete="new-password" placeholder="${hasSecret('scanPassword') ? 'leer lassen = unverändert' : ''}"></label>
-        <p class="muted small span">Den Ordner, in den dein Scanner die PDFs legt (gleicher Pfad wie im Explorer). Der Mail-Sortierer läuft als Windows-Dienst: Laufwerksbuchstaben wie <code>S:</code> sieht er nicht – für Netzwerkordner den vollen Pfad <code>\\\\Server\\Freigabe</code> mit Benutzer und Passwort angeben. Verarbeitete Dateien wandern nach <code>erledigt\\JJJJ-MM</code> – gelöscht wird nichts.</p>`
+        <p class="muted small span">Den Ordner, in den dein Scanner die PDFs legt (gleicher Pfad wie im Explorer). Postwart läuft als Windows-Dienst: Laufwerksbuchstaben wie <code>S:</code> sieht er nicht – für Netzwerkordner den vollen Pfad <code>\\\\Server\\Freigabe</code> mit Benutzer und Passwort angeben. Verarbeitete Dateien wandern nach <code>erledigt\\JJJJ-MM</code> – gelöscht wird nichts.</p>`
           : `<label>Scanner-Ordner (im Container)<input name="scanDir" value="${esc(cfg.invoices.scanDir)}" maxlength="200"></label>
         <p class="muted small span">Der Scanner legt PDFs in eine Freigabe, die beim Container als <code>/scan</code> eingebunden ist. Verarbeitete Dateien wandern nach <code>erledigt/JJJJ-MM</code>, doppelte nach <code>erledigt/doppelt</code> – gelöscht wird nichts. Scans werden nur abgeholt, wenn das Sammel-Postfach scharf ist.</p>`}
         <div class="row span"><button class="btn" name="next" value="scantest">Speichern &amp; Ordner prüfen</button></div>`}
@@ -742,7 +742,7 @@ export function createApp () {
 
     ${!s.features.folders ? `<section class="card" id="ordner"><h2>Ordner</h2><p class="muted">Die Mails werden in diese Ordner unter „${esc(cfg.root)}“ sortiert. Ändern kann sie der Verwalter.</p>
       <ul>${activeCategories(cfg).map(c => `<li><b>${esc(c.name)}</b> <span class="muted small">${esc(c.desc)}</span></li>`).join('')}</ul></section>` : `<section class="card" id="ordner"><h2>Ordner</h2>
-      <p class="muted">Die Ordner liegen unter „${esc(cfg.root)}“ in jedem Postfach und erscheinen in Outlook. Die Beschreibung ist das, was die KI über den Ordner weiß – je genauer, desto besser. Wird ein Name geändert, legt der Sortierer einen neuen Ordner an; der alte bleibt (in Outlook umbenennen oder löschen).</p>
+      <p class="muted">Die Ordner liegen unter „${esc(cfg.root)}“ in jedem Postfach und erscheinen in Outlook. Die Beschreibung ist das, was die KI über den Ordner weiß – je genauer, desto besser. Wird ein Name geändert, legt Postwart einen neuen Ordner an; der alte bleibt (in Outlook umbenennen oder löschen).</p>
       <form method="post" action="/einstellungen/ordner" class="form">${csrf(s)}
         <label>Hauptordner<input name="root" value="${esc(cfg.root)}" maxlength="60" required></label>
         ${cfg.categories.map(c => `<fieldset class="cat"><legend>${esc(c.name)}${c.custom ? ' <span class="pill">eigener Ordner</span>' : ''}${c.system ? ' <span class="pill warn">Sicherheit</span>' : ''}</legend>
@@ -857,7 +857,7 @@ export function createApp () {
     back(res, '/einstellungen#betrieb', { msg: 'Gespeichert.' })
   })
   app.post('/lizenz/aktivieren', async (req, res) => {
-    try { await activate(req.body.key, getConfig().business.name || ('Mail-Sortierer ' + os.hostname())); back(res, '/einstellungen#lizenz', { msg: 'Lizenz aktiviert – vielen Dank!' }) } catch (e) { back(res, '/einstellungen#lizenz', { err: errText(e) }) }
+    try { await activate(req.body.key, getConfig().business.name || ('Postwart ' + os.hostname())); back(res, '/einstellungen#lizenz', { msg: 'Lizenz aktiviert – vielen Dank!' }) } catch (e) { back(res, '/einstellungen#lizenz', { err: errText(e) }) }
   })
   app.post('/lizenz/pruefen', async (req, res) => {
     const st = await checkin({ force: true })

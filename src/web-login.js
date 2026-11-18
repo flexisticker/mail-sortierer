@@ -47,7 +47,7 @@ export function registerLogin (app) {
         <label>Passwort<input name="pw" type="password" required autocomplete="current-password" maxlength="200"></label>
         <label class="check"><input type="checkbox" name="bleiben" value="1" checked> Angemeldet bleiben (30 Tage, nur auf eigenen Geräten)</label>
         <button class="btn primary">Weiter</button></form>
-      <p class="muted small">Danach fragt der Sortierer den Code aus deiner Authenticator-App ab.</p>
+      <p class="muted small">Danach fragt Postwart den Code aus deiner Authenticator-App ab.</p>
       <a class="hpf" href="/intern/kontakt" tabindex="-1" aria-hidden="true">Kontakt</a></section>`
     }))
   })
@@ -123,7 +123,7 @@ export function registerLogin (app) {
       body: `<section class="card narrow"><h1>Fertig – bitte Notfallcodes aufbewahren</h1>
       <p>Falls das Handy verloren geht, kommst du mit einem dieser Codes herein (jeder Code gilt einmal). <b>Jetzt ausdrucken oder abschreiben</b> – sie werden nur dieses eine Mal angezeigt.</p>
       <ul class="codes">${r.codes.map(c => `<li class="mono">${esc(c)}</li>`).join('')}</ul>
-      <div class="row wrap"><button class="btn" data-print>Drucken</button><a class="btn primary" href="/">Weiter zum Mail-Sortierer</a></div></section>`
+      <div class="row wrap"><button class="btn" data-print>Drucken</button><a class="btn primary" href="/">Weiter zu Postwart</a></div></section>`
     }))
   })
 

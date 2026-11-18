@@ -91,7 +91,7 @@ export async function buildMessage (acc, m) {
     attachments: [...(m.attachments || []).map(a => ({ filename: a.filename, content: a.content, contentType: a.contentType })), ...inline],
     messageId, date: new Date(), inReplyTo: m.inReplyTo || undefined, references: m.references || undefined,
     disableFileAccess: true, disableUrlAccess: true,
-    headers: { 'X-Mailer': `Mail-Sortierer ${VERSION}` }
+    headers: { 'X-Mailer': `Postwart ${VERSION}` }
   }
   const mc = new MailComposer(opts)
   const node = mc.compile()

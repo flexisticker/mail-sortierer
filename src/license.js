@@ -60,8 +60,8 @@ export function licenseState () {
     const revoked = kvGet('licenseRevoked')
     let problem = null
     if (lic.installId !== out.installId) problem = ['invalid', 'Die Lizenz gehört zu einer anderen Installation. Bitte neu aktivieren.']
-    else if (lic.product && lic.product !== PRODUCT) problem = ['invalid', 'Diese Lizenz ist nicht für den Mail-Sortierer ausgestellt.']
-    else if (Array.isArray(lic.modules) && !lic.modules.includes(PRODUCT)) problem = ['nomodule', 'Die Vedly-Lizenz enthält den Mail-Sortierer nicht.']
+    else if (lic.product && lic.product !== PRODUCT) problem = ['invalid', 'Diese Lizenz ist nicht für Postwart ausgestellt.']
+    else if (Array.isArray(lic.modules) && !lic.modules.includes(PRODUCT)) problem = ['nomodule', 'Die Vedly-Lizenz enthält Postwart nicht.']
     else if (revoked && revoked.licenseId === lic.id) problem = ['revoked', `Die Lizenz wurde gesperrt${revoked.reason ? ` (${revoked.reason})` : ''}.`]
     else if (lic.validUntil && Date.parse(lic.validUntil) + DAY <= Date.now()) problem = ['expired', `Die Lizenz ist am ${de(lic.validUntil)} abgelaufen.`]
     else if (lic.leaseUntil && Date.parse(lic.leaseUntil) <= Date.now()) problem = ['lease', 'Die Lizenz konnte zu lange nicht bei der Vedly-Zentrale bestätigt werden – Internetverbindung prüfen.']
@@ -77,7 +77,7 @@ export function licenseState () {
   const first = Date.parse(kvGet('installFirstStart') || new Date().toISOString())
   const left = Math.ceil((first + TRIAL_DAYS * DAY - Date.now()) / DAY)
   out.trialLeft = Math.max(0, left)
-  if (left > 0) return Object.assign(out, { state: 'trial', warn: true, message: `Testzeitraum: noch ${left} Tage. Danach Vedly-Lizenz mit dem Modul „Mail-Sortierer“ aktivieren.` })
+  if (left > 0) return Object.assign(out, { state: 'trial', warn: true, message: `Testzeitraum: noch ${left} Tage. Danach Vedly-Lizenz mit dem Modul „Postwart“ aktivieren.` })
   return Object.assign(out, { state: 'trialover', full: false, message: 'Der Testzeitraum ist abgelaufen – bitte Vedly-Lizenz aktivieren. Bis dahin nur Probelauf (nichts wird verschoben).' })
 }
 

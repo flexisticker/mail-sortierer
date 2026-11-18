@@ -1,19 +1,20 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>Mail-Sortierer</Name>
+  <Name>Postwart</Name>
   <Repository>ghcr.io/flexisticker/mail-sortierer:latest</Repository>
   <Registry>https://github.com/flexisticker/mail-sortierer/pkgs/container/mail-sortierer</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
   <Support>https://github.com/flexisticker/mail-sortierer</Support>
   <Project>https://github.com/flexisticker/mail-sortierer</Project>
-  <Overview>Sortiert mehrere IMAP-Postfächer, sammelt Rechnungen nach Jahr/Monat (auch vom Scanner) und schickt sie auf Knopfdruck an Lexware Office. Sortiert mit der lokalen KI (Ollama) in Ordner und lernt aus Korrekturen. Nichts verlässt das Heimnetz. Löscht nie.</Overview>
+  <Overview>Postwart (früher Mail-Sortierer): sortiert IMAP-Postfächer mit der lokalen KI (Ollama) und lernt aus Korrekturen, erkennt Phishing und gefährliche Anhänge, sammelt Rechnungen nach Jahr/Monat (auch vom Scanner) für Lexware Office, Webmail zum Lesen und Schreiben. Mehrere Nutzer mit Zwei-Faktor-Anmeldung, von außen nur über einen HTTPS-Proxy.</Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <Icon>http://192.168.1.10:8110/icon.png</Icon>
   <ExtraParams>--restart unless-stopped</ExtraParams>
-  <Config Name="Oberfläche" Target="8080" Default="8110" Mode="tcp" Description="Weboberfläche. NUR im Heimnetz verwenden, nicht über den Proxy nach außen freigeben." Type="Port" Display="always" Required="true" Mask="false">8110</Config>
+  <Config Name="Oberfläche" Target="8080" Default="8110" Mode="tcp" Description="Weboberfläche. Von außen nur über Nginx Proxy Manager mit HTTPS freigeben (siehe docs/ZUGRIFF-VON-AUSSEN.md)." Type="Port" Display="always" Required="true" Mask="false">8110</Config>
   <Config Name="Daten" Target="/data" Default="/mnt/user/appdata/mail-sortierer" Mode="rw" Description="Datenbank, Einstellungen, Schlüssel (mitsichern)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/mail-sortierer</Config>
   <Config Name="Scanner-Ordner" Target="/scan" Default="/mnt/user/scan" Mode="rw" Description="Unraid-Freigabe für den Scanner (PDFs). Verarbeitete Dateien wandern nach erledigt/." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/scan</Config>
+  <Config Name="Schlüssel für Passwörter" Target="POSTWART_SCHLUESSEL" Default="" Mode="" Description="Optional, empfohlen: hält den Schlüssel der gespeicherten Postfach-Passwörter aus dem Datenordner heraus. Wert in Postwart unter Verwaltung → Sicherheits-Check → „Schlüssel anzeigen“. Später nicht ändern oder löschen." Type="Variable" Display="always" Required="false" Mask="true"></Config>
   <Config Name="Zeitzone" Target="TZ" Default="Europe/Berlin" Mode="" Description="Zeitzone" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Berlin</Config>
 </Container>

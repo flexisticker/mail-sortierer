@@ -8,6 +8,7 @@ import {
 } from './auth.js'
 import { shield, KINDS, saveShieldConfig, manualBan, selfCheck } from './shield.js'
 import { checkUpdate } from './updates.js'
+import { keySource, currentKeyBase64, KEY_ENV } from './secrets.js'
 import { getConfig, saveConfig, targetLabel } from './config.js'
 import { listModels, queueLength } from './ollama.js'
 import { classify } from './classify.js'
@@ -87,7 +88,7 @@ export function registerAdmin (app) {
           <fieldset class="span"><legend>Freigegebene Bereiche</legend>${featureBoxes(f)}</fieldset>
           <div class="row span"><button class="btn primary">Speichern</button></div></form>
         ${u.data ? `<form method="post" action="/verwaltung/nutzer/${u.id}" class="row">${csrf(s)}<input type="hidden" name="aktion" value="loeschen">
-          <label class="check"><input type="checkbox" name="sicher" value="1" required> Alle Daten von ${esc(u.name)} im Sortierer löschen (Postfächer, Gelerntes, Rechnungen) – die Mails im Postfach selbst bleiben</label>
+          <label class="check"><input type="checkbox" name="sicher" value="1" required> Alle Daten von ${esc(u.name)} in Postwart löschen (Postfächer, Gelerntes, Rechnungen) – die Mails im Postfach selbst bleiben</label>
           <button class="btn ghost" data-confirm="${esc(u.name)} endgültig löschen?">Nutzer löschen</button></form>` : '<p class="muted small">Dieses Konto nutzt die Haupt-Datenbank (erstes Konto) und lässt sich nicht löschen.</p>'}
       </details>` }).join('')}
     </section>
@@ -196,7 +197,7 @@ export function registerAdmin (app) {
     const de = (v) => new Date(v).toLocaleString('de-DE', { timeZone: 'Europe/Berlin', dateStyle: 'short', timeStyle: 'short' })
     const body = `<h1>Verwaltung</h1>${tabs('/verwaltung/schutz')}
     <section class="card"><h2>Angriffsschutz</h2>
-      <p class="muted">Ist der Sortierer von außen erreichbar, klopfen ständig Bots an. Wer in eine Falle tappt (z. B. <code>/wp-login.php</code>, <code>/.env</code>), Angriffsmuster schickt oder zu oft falsch anmeldet, sammelt Strafpunkte und wird gesperrt: 1 Stunde → 1 Tag → 7 Tage → 30 Tage. Heimnetz und erfolgreich angemeldete Geräte werden nie gesperrt.</p>
+      <p class="muted">Ist Postwart von außen erreichbar, klopfen ständig Bots an. Wer in eine Falle tappt (z. B. <code>/wp-login.php</code>, <code>/.env</code>), Angriffsmuster schickt oder zu oft falsch anmeldet, sammelt Strafpunkte und wird gesperrt: 1 Stunde → 1 Tag → 7 Tage → 30 Tage. Heimnetz und erfolgreich angemeldete Geräte werden nie gesperrt.</p>
       <div class="kpis"><div><b>${o.stats.today}</b><span>heute</span></div><div><b>${o.stats.week}</b><span>7 Tage</span></div><div><b>${o.stats.month}</b><span>30 Tage</span></div><div><b>${o.bans.length}</b><span>gesperrt</span></div></div>
       ${s.home ? '' : '<div class="alert info">Einstellungen nur aus dem Heimnetz änderbar. Entsperren geht auch von außen.</div>'}
       <form method="post" action="/verwaltung/schutz" class="form two">${csrf(s)}
@@ -238,9 +239,25 @@ export function registerAdmin (app) {
     const body = `<h1>Verwaltung</h1>${tabs('/verwaltung/check')}
     <section class="card"><h2>Sicherheits-Check</h2>
       <ul class="checks">${list.map(c => `<li class="ck-${c.state}"><span class="ck-ic">${ICON[c.state]}</span><div><b>${esc(c.title)}</b><div class="muted small">${esc(c.text)}</div></div></li>`).join('')}</ul>
-      <form method="post" action="/verwaltung/check/update">${csrf(s)}<button class="btn">Jetzt nach Updates suchen</button></form>
+      <div class="row wrap"><form method="post" action="/verwaltung/check/update">${csrf(s)}<button class="btn">Jetzt nach Updates suchen</button></form>
+      ${keySource() === 'file' ? `<form method="post" action="/verwaltung/check/schluessel">${csrf(s)}<button class="btn"${s.home ? '' : ' disabled title="nur im Heimnetz"'} data-confirm="Den Schlüssel für die gespeicherten Passwörter anzeigen? Niemandem zeigen und nicht per Mail verschicken.">Schlüssel anzeigen (für die Variable)</button></form>` : ''}</div>
       <p class="muted small">Zusätzlich prüft GitHub jede Woche die Programm-Pakete und das Basis-Image mit den neuesten Lücken-Datenbanken; bei einem ernsten Fund kommt eine Mail und neue Versionen werden erst nach der Korrektur gebaut.</p></section>`
     res.send(page({ title: 'Sicherheits-Check', body, session: s, path: '/verwaltung', ...flash(req) }))
+  })
+  app.post('/verwaltung/check/schluessel', homeOnly, (req, res) => {
+    if (keySource() !== 'file') return back(res, '/verwaltung/check', { err: 'Der Schlüssel liegt schon nicht mehr im Datenordner.' })
+    res.send(page({
+      title: 'Schlüssel', session: req.session, path: '/verwaltung',
+      body: `<section class="card narrow wide-narrow"><h1>Schlüssel für die gespeicherten Passwörter</h1>
+      <p class="mono big">${esc(currentKeyBase64())}</p>
+      <ol class="steps-plain">
+        <li>Unraid → Docker → Postwart → <b>Edit</b> → unten „Add another Path, Port, Variable …“ → <b>Variable</b>.</li>
+        <li>Name: <code>Schlüssel</code>, Key: <code>${KEY_ENV}</code>, Value: der Schlüssel oben (genau so, 44 Zeichen). <b>Apply</b>.</li>
+        <li>Beim Neustart übernimmt Postwart die Variable und löscht die Schlüsseldatei aus dem Datenordner. Im Sicherheits-Check steht dann „getrennt abgelegt“.</li>
+      </ol>
+      <p class="muted small">Den Schlüssel zusätzlich offline aufbewahren (z. B. ausgedruckt beim Notfallblatt): ohne ihn sind die Postfach-Passwörter nach einer Wiederherstellung neu einzugeben. Die Variable später nicht ändern oder löschen – dann startet Postwart nicht, damit nichts verloren geht.</p>
+      <a class="btn primary" href="/verwaltung/check">Fertig</a></section>`
+    }))
   })
   app.post('/verwaltung/check/update', async (req, res) => {
     try { const r = await checkUpdate(); back(res, '/verwaltung/check', { msg: r.update ? `Update verfügbar: ${r.latest}` : `Aktuell (neueste Version ${r.latest || '?'}).` }) } catch (e) { back(res, '/verwaltung/check', { err: 'Update-Prüfung fehlgeschlagen: ' + errText(e) }) }

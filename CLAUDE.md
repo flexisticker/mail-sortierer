@@ -1,4 +1,4 @@
-# Mail-Sortierer – Projektgedächtnis
+# Postwart (früher Mail-Sortierer) – Projektgedächtnis
 
 Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticker/flex-studio`). Kommunikation Deutsch, Du-Form.
 **Keine Passwörter, Tokens oder Schlüssel in Code, Doku oder diese Datei.**
@@ -166,3 +166,12 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
     Webmail gegen GreenMail (Skript/Formular entfernt, cid-Bild, Tracker erst nach Klick, .exe gesperrt, Löschen → Papierkorb), Senden über GreenMail-SMTP (Signatur mit Logo als cid, Anhang, Antwort mit
     In-Reply-To + \Answered, Weiterleiten mit Original-PDF, Entwurf → senden), Umzug einer 1.8-Datenbank (Daten, Ollama, Passwörter bleiben), von außen (Secure-Cookie, KI nur Heimnetz), 390 px.
     **Nicht getestet:** echtes Alfahosting (IMAP-Schlagwort `$Phishing`, SMTP 465), echtes Handy mit Authenticator-App, Weg über NPM, große Postfächer im Webmail, Outlook-Darstellung der gesendeten Mails.
+- **2.1.0 (18.11.2026): Name Postwart** (Wunsch Michael). Sichtbare Texte, Setup (`Postwart-Setup-<Version>.exe`, Startmenü/Desktop, Dienst-Anzeigename),
+  Unraid-Vorlage, 2FA-Aussteller, X-Mailer umbenannt. **Technisch bleibt:** Repository/Image `flexisticker/mail-sortierer`, Datenbankname, Dienst-ID/exe `Mail-Sortierer`,
+  Windows-Ordner, Firewall-Regel, Lizenz-Produkt `mailsort`. Alte Verknüpfungen entfernt `[InstallDelete]`.
+  **Schlüssel getrennt** (`secrets.js`): Reihenfolge Variable `POSTWART_SCHLUESSEL` (base64, 32 Byte) › Windows-DPAPI (`.schluessel.dpapi`, LocalMachine über powershell.exe;
+  vorhandene `.schluessel` wird übernommen und gelöscht) › Datei `.schluessel`. `prepareKey()` beim Start: sys-kv `keyCheck` (verschlüsselt „postwart“) prüft den Schlüssel;
+  Variable neu + alter Schlüssel passt → alle Geheimnisse (kv `secrets` aller Nutzer-DBs + `users.totp_secret`) umschlüsseln, Dateien löschen; nichts passt → **Start abgebrochen**;
+  ohne Variable und ohne Datei bei vorhandenem keyCheck wird **nie** ein neuer Schlüssel erzeugt. Verwaltung → Sicherheits-Check zeigt die Quelle und (nur Heimnetz)
+  „Schlüssel anzeigen“ mit Unraid-Anleitung. `windows/test.ps1` Schritt 1b prüft DPAPI. Getestet (Node-Skript): Umzug Datei → Variable, falsche/fehlende Variable, frische Installation.
+  **Nicht getestet:** echtes DPAPI (nur im CI), Unraid-Variable am echten Server.

@@ -1,7 +1,7 @@
 # Prüft das Setup auf dem GitHub-Windows-Rechner: still installieren, Dienst + Oberfläche, Rechte, drüber installieren, deinstallieren.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$setup = Get-ChildItem (Join-Path $root 'dist-windows') -Filter 'Mail-Sortierer-Setup-*.exe' | Select-Object -First 1
+$setup = Get-ChildItem (Join-Path $root 'dist-windows') -Filter 'Postwart-Setup-*.exe' | Select-Object -First 1
 if (-not $setup) { throw 'Setup nicht gefunden' }
 $data = Join-Path $env:ProgramData 'Mail-Sortierer'
 
@@ -11,7 +11,7 @@ function Wait-Health {
     Start-Sleep 2
   }
   Get-ChildItem "$data\logs" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName -Tail 30 }
-  throw 'Mail-Sortierer antwortet nicht'
+  throw 'Postwart antwortet nicht'
 }
 
 Write-Host '1) Installieren (still, mit Scanner-Ordner)'
@@ -25,6 +25,10 @@ if ($html -notmatch 'Konto anlegen') { throw 'Einrichtungsseite fehlt' }
 if (-not (Test-Path 'C:\Scans')) { throw 'Scanner-Ordner wurde nicht angelegt' }
 $xml = Get-Content "${env:ProgramFiles}\Mail-Sortierer\Mail-Sortierer-Dienst.xml" -Raw
 if ($xml -notmatch 'SCAN_DIR" value="C:\\Scans') { throw 'SCAN_DIR fehlt in der Dienst-Konfiguration' }
+
+Write-Host '1b) Schlüssel mit Windows-Datenschutz (DPAPI)'
+if (-not (Test-Path "$data\data\.schluessel.dpapi")) { throw 'Schlüssel ist nicht mit DPAPI geschützt (.schluessel.dpapi fehlt)' }
+if (Test-Path "$data\data\.schluessel") { throw 'Ungeschützte Schlüsseldatei liegt noch im Datenordner' }
 
 Write-Host '2) Rechte am Datenordner'
 $acl = (Get-Acl $data).Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }

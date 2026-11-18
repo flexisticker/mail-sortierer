@@ -1,5 +1,5 @@
-# Baut das Windows-Setup des Mail-Sortierers (läuft in der GitHub Action auf windows-latest).
-# Ergebnis: dist-windows\Mail-Sortierer-Setup-<Version>.exe
+# Baut das Windows-Setup von Postwart (früher Mail-Sortierer) (läuft in der GitHub Action auf windows-latest).
+# Ergebnis: dist-windows\Postwart-Setup-<Version>.exe
 param([string]$Build = '', [string]$Commit = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot

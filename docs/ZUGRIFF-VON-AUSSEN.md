@@ -1,6 +1,6 @@
-# Mail-Sortierer von außen erreichbar machen (Nginx Proxy Manager)
+# Postwart von außen erreichbar machen (Nginx Proxy Manager)
 
-Ab Version 2.0 darf der Mail-Sortierer über das Internet erreichbar sein: Anmeldung mit Passwort **und** Code aus der
+Ab Version 2.0 darf Postwart über das Internet erreichbar sein: Anmeldung mit Passwort **und** Code aus der
 Authenticator-App (Pflicht für alle), Angriffsschutz mit Fallen und IP-Sperren, Verwaltung von außen nur nach erneuter Code-Eingabe.
 
 ## 1. DNS
@@ -15,7 +15,7 @@ Im Heimnetz (UniFi) zusätzlich einen lokalen DNS-Eintrag `mail` → IP des Ngin
 - **Keine** Access-List „Nur Heimnetz“ (sonst kommt man von außen nicht hin)
 
 Der Proxy reicht die echte Besucher-IP (`X-Forwarded-For`) und `https` (`X-Forwarded-Proto`) weiter – das ist bei NPM Standard.
-Der Mail-Sortierer übernimmt diese Angaben nur von Proxys aus dem eigenen Netz.
+Postwart übernimmt diese Angaben nur von Proxys aus dem eigenen Netz.
 
 ## 3. Prüfen
 - Mit dem Handy über Mobilfunk `https://mail.flexisticker.de` öffnen → Anmeldeseite.
@@ -28,7 +28,7 @@ auch von unterwegs, aber nur nach erneuter Code-Eingabe (gilt 10 Minuten).
 
 ## Notfall
 - Nutzer hat Passwort oder Handy verloren → Verwaltung → Nutzer → „Passwort zurücksetzen“ bzw. „2FA zurücksetzen“.
-- Du selbst kommst nicht mehr rein → Unraid: Docker → Mail-Sortierer → Console:
+- Du selbst kommst nicht mehr rein → Unraid: Docker → Postwart → Console:
   `node src/reset-admin.js` (zeigt Konten) und `node src/reset-admin.js <name>` (Einmal-Passwort, 2FA wird neu eingerichtet).
 - Selbst ausgesperrt (IP gesperrt)? Aus dem Heimnetz wird nie gesperrt; sonst Container neu starten hebt Fehlversuch-Sperren auf,
   IP-Sperren unter Verwaltung → Angriffsschutz → Entsperren.

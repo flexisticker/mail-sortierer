@@ -234,7 +234,7 @@ export function registerMail (app) {
           const dest = String(req.body.ziel || '')
           if (!req.folders.some(f => f.path === dest)) return back(res, to, { err: 'Bitte einen Zielordner wählen.' })
           await moveMessages(acc, req.folder, uids, dest)
-          return back(res, listUrl, { msg: `${uids.length} Mail(s) verschoben${/sortiert/i.test(dest) ? ' – der Sortierer lernt daraus beim nächsten Durchlauf' : ''}.` })
+          return back(res, listUrl, { msg: `${uids.length} Mail(s) verschoben${/sortiert/i.test(dest) ? ' – Postwart lernt daraus beim nächsten Durchlauf' : ''}.` })
         }
         case 'spam': {
           const cfg = getConfig()

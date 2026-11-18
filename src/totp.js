@@ -49,7 +49,7 @@ export function verifyTotp (secret, code, last = 0, t = Date.now()) {
 }
 export const totpNow = (secret, t = Date.now()) => hotp(b32decode(secret), stepNow(t)) // nur für Tests
 
-export function otpauthUri (secret, account, issuer = 'Mail-Sortierer') {
+export function otpauthUri (secret, account, issuer = 'Postwart') {
   return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(account)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`
 }
 
