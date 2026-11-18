@@ -98,17 +98,46 @@ export function registerLogin (app) {
     const uri = otpauthUri(sec, req.session.name)
     res.send(page({
       title: 'Zwei-Faktor einrichten', ...flash(req),
-      body: `<section class="card narrow"><h1>Zwei-Faktor-Anmeldung einrichten</h1>${noticeBox(req.session)}
-      <p>Damit niemand mit deinem Passwort allein an deine Mails kommt, brauchst du zusätzlich einen Code vom Handy.</p>
-      <ol class="steps-plain">
-        <li>Authenticator-App öffnen (z. B. Google Authenticator, Microsoft Authenticator, am iPhone „Passwörter“ → Bestätigungscodes).</li>
-        <li>Neuen Eintrag hinzufügen und diesen QR-Code scannen:</li>
-      </ol>
-      <div class="qrbox">${qrSvg(uri)}</div>
-      <details><summary>QR-Code geht nicht? Schlüssel von Hand eingeben</summary><p class="mono big">${esc(sec.replace(/(.{4})/g, '$1 ').trim())}</p><p class="muted small">Art: zeitbasiert, 6 Ziffern, 30 Sekunden.</p></details>
-      <form method="post" action="/anmelden/einrichten-2fa" class="form">${csrf(req.session)}
-        <label>3. Den 6-stelligen Code aus der App eingeben<input name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" required autocomplete="one-time-code" autofocus></label>
+      body: `<section class="card narrow wide-narrow enroll"><h1>Zwei-Faktor-Anmeldung einrichten</h1>${noticeBox(req.session)}
+      <p>Damit niemand mit deinem Passwort allein an deine Mails kommt, brauchst du zusätzlich einen 6-stelligen Code aus einer <b>Authenticator-App</b> auf deinem Handy (z. B. <b>Authy</b>, Google Authenticator oder Microsoft Authenticator – alle kostenlos im Play Store bzw. App Store). Der Code ändert sich alle 30 Sekunden.</p>
+
+      <details class="way" data-way="handy" open><summary><b>Ich richte am Handy ein</b> <span class="muted small">(diese Seite ist auf dem Handy offen)</span></summary>
+        <p class="muted small">Den QR-Code kannst du nicht scannen, weil er auf demselben Bildschirm steht. Stattdessen kopierst du den Schlüssel in die App:</p>
+        <ol class="steps-big">
+          <li><b>Schlüssel kopieren:</b>
+            <div class="copyrow"><input class="mono keybox" id="key2fa" value="${esc(sec)}" readonly aria-label="Schlüssel"><button type="button" class="btn primary" data-copy="key2fa">Kopieren</button></div>
+            <span class="muted small">Klappt „Kopieren“ nicht: lange auf das Feld drücken → „Alles auswählen“ → „Kopieren“.</span></li>
+          <li><b>Authenticator-App öffnen</b> (z. B. Authy) und einen <b>neuen Eintrag</b> anlegen – in Authy über das <b>+</b> bzw. „Konto hinzufügen“.</li>
+          <li><b>„Schlüssel manuell eingeben“</b> wählen (in Authy „Enter key manually“ / „Code manuell eingeben“, nicht „QR-Code scannen“).</li>
+          <li>Ins Feld für den Schlüssel <b>lange drücken → „Einfügen“</b>. Als Name z. B. <b>Postwart</b>, falls gefragt: <b>zeitbasiert, 6 Ziffern, 30 Sekunden</b> → speichern.</li>
+          <li>Die App zeigt jetzt einen <b>6-stelligen Code</b>. In Authy: auf den Eintrag tippen, dann auf <b>„Kopieren“</b> bzw. auf den Code – in Google Authenticator: lange auf den Code drücken.</li>
+          <li>Zurück in den Browser wechseln und den Code unten bei „Code aus der App“ <b>einfügen</b> (oder abtippen) → <b>Bestätigen</b>. Läuft der Code gerade ab, einfach den nächsten nehmen.</li>
+        </ol>
+        <p class="muted small">Google Authenticator, 2FAS u. a. können den Eintrag auch direkt übernehmen: <a class="btn sm" href="${esc(uri)}">In Authenticator-App öffnen</a> (öffnet sich nichts, den Weg oben nehmen).</p>
+      </details>
+
+      <details class="way" data-way="pc"><summary><b>Ich richte am PC ein</b> <span class="muted small">(Handy liegt daneben)</span></summary>
+        <ol class="steps-big">
+          <li>Authenticator-App auf dem Handy öffnen und einen <b>neuen Eintrag</b> anlegen (Authy: <b>+</b> → „QR-Code scannen“).</li>
+          <li>Diesen QR-Code mit dem Handy <b>scannen</b>:</li>
+        </ol>
+        <div class="qrbox">${qrSvg(uri)}</div>
+        <p class="muted small">Scannen geht nicht? Diesen Schlüssel in der App von Hand eingeben: <span class="mono">${esc(sec.replace(/(.{4})/g, '$1 ').trim())}</span> (zeitbasiert, 6 Ziffern, 30 Sekunden).</p>
+        <ol class="steps-big" start="3"><li>Den 6-stelligen Code aus der App unten eingeben → <b>Bestätigen</b>.</li></ol>
+      </details>
+
+      <form method="post" action="/anmelden/einrichten-2fa" class="form enroll-code">${csrf(req.session)}
+        <label><b>Code aus der App</b><input name="code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" required autocomplete="one-time-code" placeholder="123456"></label>
         <button class="btn primary">Bestätigen</button></form>
+      <details class="way small"><summary>Hilfe: der Code wird nicht angenommen</summary>
+        <ul class="muted small">
+          <li>Die <b>Uhrzeit am Handy</b> muss stimmen: Einstellungen → Datum und Uhrzeit → „Automatisch“ einschalten.</li>
+          <li>Immer den <b>aktuellen</b> Code nehmen – jeder gilt nur 30 Sekunden (kurz davor und danach wird er noch angenommen).</li>
+          <li>Zeigt die App 7 oder 8 Ziffern, den Eintrag löschen und mit <b>6 Ziffern</b> neu anlegen.</li>
+          <li>Authy fragt beim ersten Start nach Handynummer und E-Mail – das ist für Authy selbst, nicht für Postwart.</li>
+          <li>Nach fünf falschen Codes musst du dich neu anmelden. Der Schlüssel bleibt gleich, bis die Einrichtung geklappt hat.</li>
+        </ul>
+      </details>
       <form method="post" action="/abmelden">${csrf(req.session)}<button class="link">Abbrechen und abmelden</button></form></section>`
     }))
   })
@@ -121,7 +150,7 @@ export function registerLogin (app) {
     res.send(page({
       title: 'Notfallcodes',
       body: `<section class="card narrow"><h1>Fertig – bitte Notfallcodes aufbewahren</h1>
-      <p>Falls das Handy verloren geht, kommst du mit einem dieser Codes herein (jeder Code gilt einmal). <b>Jetzt ausdrucken oder abschreiben</b> – sie werden nur dieses eine Mal angezeigt.</p>
+      <p>Falls das Handy verloren geht, kommst du mit einem dieser Codes herein (jeder Code gilt einmal). <b>Jetzt ausdrucken oder abschreiben</b> (oder ein Foto auf einem anderen Gerät) – sie werden nur dieses eine Mal angezeigt.</p><p class="muted small">Tipp Authy: In der App lässt sich eine verschlüsselte Sicherung einschalten – dann sind die Codes auch auf einem neuen Handy wieder da.</p>
       <ul class="codes">${r.codes.map(c => `<li class="mono">${esc(c)}</li>`).join('')}</ul>
       <div class="row wrap"><button class="btn" data-print>Drucken</button><a class="btn primary" href="/">Weiter zu Postwart</a></div></section>`
     }))

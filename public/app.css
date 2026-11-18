@@ -328,3 +328,16 @@ details.cat label { margin-bottom: 8px; }
 .form > *, .set-body > section { min-width: 0; }
 details.cat { min-width: 0; overflow: hidden; }
 details.cat > summary > * { min-width: 0; max-width: 100%; }
+
+/* ---- Zwei-Faktor-Einrichtung ---- */
+.enroll details.way { border: 1px solid var(--line); border-radius: 12px; padding: 0 14px; margin: 12px 0; }
+.enroll details.way > summary { padding: 12px 0; font-size: 15.5px; color: var(--text); cursor: pointer; }
+.enroll details.way[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.enroll details.way.small > summary { font-size: 14px; color: var(--muted); }
+.steps-big { padding-left: 22px; margin: 8px 0 12px; }
+.steps-big li { margin: 10px 0; line-height: 1.5; }
+.copyrow { display: flex; gap: 8px; margin: 6px 0 2px; }
+.copyrow .keybox { flex: 1; min-width: 0; font-size: 16px; letter-spacing: .03em; }
+.enroll-code { margin-top: 6px; }
+.enroll-code input { font-size: 22px; letter-spacing: .2em; text-align: center; }
+@media (max-width: 700px) { .top:not(:has(.nav)) .theme-btn { right: 12px; } }

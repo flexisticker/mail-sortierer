@@ -132,3 +132,23 @@ document.addEventListener('click', (e) => {
   nav.addEventListener('click', (e) => { const a = e.target.closest('a[data-tab]'); if (!a) return; e.preventDefault(); history.replaceState(null, '', a.getAttribute('href')); show(a.dataset.tab, true) })
   window.addEventListener('hashchange', () => { const g = fromHash(); if (g) show(g) })
 })()
+
+// Kopieren-Knopf (geht auch ohne HTTPS: Feld markieren + Kopieren)
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-copy]')
+  if (!b) return
+  const el = document.getElementById(b.getAttribute('data-copy'))
+  if (!el) return
+  let ok = false
+  try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(el.value); ok = true } } catch { /* Rückfall */ }
+  if (!ok) { el.focus(); el.select(); el.setSelectionRange(0, el.value.length); try { ok = document.execCommand('copy') } catch { ok = false } }
+  const t = b.textContent
+  b.textContent = ok ? 'Kopiert ✓' : 'Bitte markieren und kopieren'
+  setTimeout(() => { b.textContent = t }, 2500)
+})
+// Zwei-Faktor-Einrichtung: am PC den QR-Weg aufklappen, am Handy den Kopier-Weg
+;(function () {
+  const h = document.querySelector('details.way[data-way="handy"]'); const pc = document.querySelector('details.way[data-way="pc"]')
+  if (!h || !pc) return
+  if (!window.matchMedia('(max-width: 1000px), (pointer: coarse)').matches) { h.removeAttribute('open'); pc.setAttribute('open', '') }
+})()

@@ -198,3 +198,7 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   (aus dem `#anker` – bestehende Rücksprünge wie `/einstellungen#rechnungen` landen im richtigen Bereich; ohne Skript alles untereinander). **Neue Abschnitte: id + data-group setzen.**
   Ordner als `<details class="cat">` (Name + Beschreibung einzeilig). Fehlende Einrichtung bei Rechnungen als `alert info` statt rot, Seite „Mails“ heißt „Sortierung“.
   Getestet (Playwright, hell/dunkel, 1440/390 px): Umschalten, Neuladen behält Wahl, Bereich aus Anker, Speichern bleibt im Bereich, kein Überlauf auf allen Seiten.
+- **2.5.0 (18.11.2026): Anleitung Zwei-Faktor am Handy** (Wunsch Michael, App „Authy“). Einrichtungsseite `/anmelden/einrichten-2fa` mit zwei Wegen (`details.way`):
+  **Handy** = Schlüssel kopieren (`#key2fa` + `data-copy`: Clipboard-API, ohne HTTPS Rückfall markieren + `execCommand('copy')`), Schritte für Authy („Enter key manually“), Code zurückkopieren,
+  zusätzlich `otpauth://`-Link; **PC** = QR scannen. app.js öffnet je nach Gerät (`(max-width: 1000px), (pointer: coarse)`) den passenden Weg. Hilfe-Block (Uhrzeit, 6 Ziffern, Authy-Telefonnummer).
+  Gleiche Anleitung zum Weitergeben `docs/ZWEI-FAKTOR.md`. Getestet (Playwright Pixel 7 + PC): richtiger Weg offen, Kopieren = Schlüssel, Code bestätigt → Notfallcodes. **Nicht getestet:** echtes Authy.

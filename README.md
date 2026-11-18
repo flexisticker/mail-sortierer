@@ -78,6 +78,10 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur versch
 - Knopf oben rechts: **automatisch · hell · dunkel** (je Gerät gemerkt).
 - Einstellungen in Bereiche geteilt (Allgemein, Postfächer, Sortieren, Ordner, Rechnungen, Sicherheit, Mein Konto), Ordner als aufklappbare Zeilen.
 
+## Zwei-Faktor einrichten (Anleitung)
+
+Schritt für Schritt für Nutzer, auch direkt am Handy mit Authy: [docs/ZWEI-FAKTOR.md](docs/ZWEI-FAKTOR.md). Dieselbe Anleitung steht auf der Einrichtungsseite.
+
 ## Windows (ab 1.5)
 
 `Postwart-Setup-<Version>.exe` (Download über die Vedly-Zentrale bzw. Action-Artefakt): läuft als Windows-Dienst,
