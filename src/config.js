@@ -106,7 +106,9 @@ export function getConfig () {
 
 export function saveConfig (patch) {
   const { ollama, ...rest } = patch || {}
-  if (ollama) { const sys = sysGet('config', {}) || {}; sysSet('config', { ...sys, ollama: merge(sys.ollama || DEFAULT_CONFIG.ollama, ollama) }) }
+  // Die gemeinsame KI darf nur der Verwalter ändern
+  const u = currentUser()
+  if (ollama && (!u || u.role === 'admin')) { const sys = sysGet('config', {}) || {}; sysSet('config', { ...sys, ollama: merge(sys.ollama || DEFAULT_CONFIG.ollama, ollama) }) }
   // Abgeleitete Werte (Freigaben, Ollama) nicht in die Nutzer-Einstellungen schreiben
   const { features, ollama: _o, ...cur } = getConfig()
   const c = merge(cur, rest)

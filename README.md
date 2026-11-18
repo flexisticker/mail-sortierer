@@ -46,6 +46,19 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur versch
 - Rechnungen: Firma/privat aus der Anschrift („Michael Zatti – Flexisticker“, „… – 3dbymicha“), sonst KI nach Inhalt,
   im Zweifel **„Bitte prüfen“**. Ansicht nach Monat mit Lieferant, „Worum geht’s“, Betrag; **„Ab zu Lexware“** nur auf Klick.
 
+## Mehrere Nutzer, Webmail, Zugriff von außen (ab 2.0)
+
+- **Mehrere Nutzer** (z. B. Familie): Verwaltung → Nutzer. Jeder hat eine eigene Oberfläche und eigene Daten (eigene Datenbank unter
+  `DATA_DIR/nutzer/<id>/`), die KI (Ollama) teilen sich alle über eine Warteschlange. Der Verwalter sieht keine fremden Mails, setzt aber
+  Passwort und Zwei-Faktor zurück, meldet Geräte ab, sperrt. Bereiche (Rechnungen, Lexware, Scanner, Aufräumen, Ordner, Webmail) je Nutzer freigeben.
+- **Zwei-Faktor-Pflicht** (Authenticator-App + 10 Notfallcodes), „Angemeldet bleiben“ 30 Tage.
+- **Sortieren je Nutzer:** nur gelesene Mails einsortieren (ungelesene werden trotzdem sofort geprüft), gefährliche Mails nur markieren
+  (Fähnchen + Schlagwort „Phishing“) oder verschieben.
+- **Webmail** („Postfach“): Ordner, Liste, Suche, Lesen (bereinigt und abgeschottet, externe Bilder erst auf Klick, gefährliche Anhänge gesperrt),
+  Markieren, Verschieben, Spam, Papierkorb; Schreiben mit HTML-Editor, Antworten/Allen/Weiterleiten, Anhänge, Entwürfe, Signaturen mit Logo.
+- **Von außen** über Nginx Proxy Manager: siehe `docs/ZUGRIFF-VON-AUSSEN.md`. Angriffsschutz mit Fallen und IP-Sperren, Sicherheits-Check,
+  wöchentliche Sicherheitsprüfung in der GitHub Action (npm audit, Trivy, gitleaks).
+
 ## Windows (ab 1.5)
 
 `Mail-Sortierer-Setup-<Version>.exe` (Download über die Vedly-Zentrale bzw. Action-Artefakt): läuft als Windows-Dienst,
@@ -66,7 +79,7 @@ Für die KI „Ollama für Windows“ installieren. Lizenz: Vedly-Lizenzschlüss
 6. Optional **Gelernt → Bekannte Kontakte**: Kundenliste (CSV aus Vedly) einfügen.
 7. Probelauf ein paar Tage laufen lassen, unter **Mails** korrigieren, dann in der **Übersicht** „Scharf schalten“.
 
-Die Oberfläche **nicht** über Nginx Proxy Manager nach außen freigeben – nur Heimnetz.
+Von außen nur über Nginx Proxy Manager mit HTTPS freigeben (Anleitung `docs/ZUGRIFF-VON-AUSSEN.md`).
 
 ## Updates
 

@@ -12,6 +12,7 @@ import {
 import { back, int, errText, flash } from './webutil.js'
 
 const PER = 50
+const isDrafts = (req) => { const f = req.folders.find(x => x.path === req.folder); return !!f && (f.special === '\\Drafts' || /^(drafts|entwürfe|entwurf)$/i.test(f.name)) }
 const fmtShort = (iso) => {
   if (!iso) return ''
   const d = new Date(iso); const n = new Date()
@@ -64,6 +65,7 @@ export function registerMail (app) {
     return `<aside class="mail-side"><details class="mail-folders" open><summary>Ordner</summary>
       ${accs.length > 1 ? `<form method="get" action="/post/go" class="acc-pick"><select name="postfach" data-autosubmit>${options(accs.map(a => [a.id, accountLabel(a)]), req.acc.id)}</select><noscript><button class="btn sm">Wechseln</button></noscript></form>` : `<div class="muted small acc-one">${esc(accountLabel(req.acc))}</div>`}
       ${req.session.features.webmail ? `<a class="btn primary block" href="/post/neu?postfach=${req.acc.id}">Neue Mail</a>` : ''}
+      <a class="small sig-link" href="/signaturen">Signaturen</a>
       <ul>${req.folders.map(f => `<li class="d${Math.min(f.depth, 4)}"><a href="/post/${req.acc.id}?${q({ ordner: f.path })}"${f.path === req.folder ? ' class="on"' : ''}>${esc(f.name)}${f.unseen ? ` <b class="cnt">${f.unseen}</b>` : ''}</a></li>`).join('')}</ul>
     </details></aside>`
   }
@@ -130,7 +132,8 @@ export function registerMail (app) {
     <section class="mail-main">
       <div class="row wrap mail-actions">
         <a class="btn sm" href="${esc(back2)}">‹ Zurück</a>
-        ${s.features.webmail ? `<a class="btn sm primary" href="/post/neu?${q({ postfach: req.acc.id, ordner: req.folder, uid, art: 'antwort' })}">Antworten</a>
+        ${isDrafts(req) ? `<a class="btn sm primary" href="/post/neu?${q({ postfach: req.acc.id, ordner: req.folder, uid, art: 'entwurf' })}">Entwurf bearbeiten</a>` : ''}
+        ${s.features.webmail && !isDrafts(req) ? `<a class="btn sm primary" href="/post/neu?${q({ postfach: req.acc.id, ordner: req.folder, uid, art: 'antwort' })}">Antworten</a>
         <a class="btn sm" href="/post/neu?${q({ postfach: req.acc.id, ordner: req.folder, uid, art: 'alle' })}">Allen antworten</a>
         <a class="btn sm" href="/post/neu?${q({ postfach: req.acc.id, ordner: req.folder, uid, art: 'weiter' })}">Weiterleiten</a>` : ''}
         <form method="post" action="/post/${req.acc.id}/aktion" class="row wrap inline">${csrf(s)}<input type="hidden" name="ordner" value="${esc(req.folder)}"><input type="hidden" name="uids" value="${uid}"><input type="hidden" name="zurueck" value="${esc(back2)}">

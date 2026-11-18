@@ -18,7 +18,9 @@ import { setSecret, hasSecret } from './secrets.js'
 import { page, esc, csrf, fmtDate, options, STATUS_LABEL, SOURCE_LABEL } from './html.js'
 import { runOnce, isRunning, getStatus, setStatus, getAccStatus, correct, confirm, undo, requeueKept } from './worker.js'
 import { licenseState, activate, checkin, release } from './license.js'
-import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword } from './accounts.js'
+import { listAccounts, getAccount, saveAccount, deleteAccount, setAccountMode, accountLabel, accountHasPassword, smtpOf, saveSmtp } from './accounts.js'
+import { testSmtp } from './compose.js'
+import { getSecret } from './secrets.js'
 import { collecting, getInvoice, toAccounting, markPrivate, markNoInvoice, markOrder, reopen, release as releaseInvoice, editInvoice, forgetInvoiceLearning, applyYearSetting, checkScanDir, filePath, lexwareTest, monthName, STATUS as INV_STATUS } from './invoice.js'
 import { withClient, listFolders } from './imap.js'
 import { parseDnsServers, systemDnsServers, testBlocklists } from './security.js'
@@ -92,7 +94,12 @@ export function createApp () {
       // Anmelden/Einrichten brauchen kein Sitzungs-Feld (Herkunft wird oben geprüft) – sonst scheitert das Anmelden,
       // wenn noch eine gültige Sitzung besteht (wiederhergestellter Tab, zweites Fenster)
       if (req.path === '/anmelden' || req.path === '/einrichten') return next()
-      if (req.session && req.body.csrf !== req.session.csrf) {
+      // Formulare mit Dateien (Mail schreiben): CSRF-Feld prüft die Route nach dem Einlesen
+      if (/^multipart\/form-data/i.test(req.headers['content-type'] || '')) {
+        if (req.path !== '/post/senden') return res.status(415).send('Nicht erlaubt')
+        req.csrfLater = true; return next()
+      }
+      if (req.session && (req.body || {}).csrf !== req.session.csrf) {
         // veraltete Seite: nichts ausführen, zurück zur Seite mit Hinweis statt einer Sackgasse
         let to = '/'
         try { const ref = new URL(req.headers.referer || ''); if (ref.host === req.headers.host) to = ref.pathname + ref.hash } catch { /* Startseite */ }
@@ -645,6 +652,17 @@ export function createApp () {
         <label class="check"><input type="checkbox" name="allowSelfSigned" value="1"${chk(a ? a.allow_self_signed : 0)}> Zertifikat nicht prüfen (nur wenn nötig)</label>
         <div class="row span"><button class="btn primary" name="next" value="save">${a ? 'Speichern' : 'Hinzufügen'}</button><button class="btn" name="next" value="test">${a ? 'Speichern' : 'Hinzufügen'} &amp; testen</button></div>
       </form>`
+    const smtpForm = (a) => { const c = smtpOf(a); return `<h3>Postausgang (zum Schreiben im Webmail)</h3>
+      <form method="post" action="/postfaecher/${a.id}/postausgang" class="form two">${csrf(s)}
+        <label>Postausgangsserver (SMTP)<input name="host" value="${esc(a.smtp_host || '')}" placeholder="${esc(c.host)}" maxlength="200"></label>
+        <label>Port<input name="port" type="number" value="${esc(c.port)}" min="1" max="65535"></label>
+        <label class="check"><input type="checkbox" name="secure" value="1"${chk(c.secure)}> SSL/TLS (Port 465) – aus = STARTTLS (Port 587)</label>
+        <label>Absendername (z. B. „Michael Zatti – Flexisticker“)<input name="fromName" value="${esc(a.from_name || '')}" maxlength="80"></label>
+        <label>Benutzer (leer = wie oben)<input name="user" value="${esc(a.smtp_user || '')}" placeholder="${esc(a.user)}" maxlength="200" autocomplete="off"></label>
+        <label class="check"><input type="checkbox" name="same" value="1"${chk(a.smtp_same !== 0)}> Gleiches Passwort wie beim Empfang</label>
+        <label>Eigenes Passwort für den Postausgang${a.smtp_same === 0 && getSecret('smtp:' + a.id) ? ' <span class="pill good">gespeichert</span>' : ''}<input name="pass" type="password" autocomplete="new-password" placeholder="nur nötig, wenn anders als beim Empfang"></label>
+        <div class="row span"><button class="btn" name="next" value="save">Speichern</button><button class="btn" name="next" value="test">Speichern &amp; testen</button></div>
+      </form>` }
     const body = `
     <h1>Einstellungen</h1>
     <section class="card" id="betrieb"><h2>Dein Betrieb</h2>
@@ -665,6 +683,7 @@ export function createApp () {
       ${accounts.map(a => `<details class="acc"${String(req.query.offen) === String(a.id) ? ' open' : ''}><summary><b>${esc(accountLabel(a))}</b> <span class="muted small">${esc(a.user)} · ${esc(a.host)}</span>
           <span class="pill ${a.mode === 'live' ? 'good' : 'warn'}">${a.mode === 'live' ? 'Scharf' : 'Probelauf'}</span>${a.enabled ? '' : ' <span class="pill">aus</span>'}${target && target.id === a.id ? ' <span class="pill info">Rechnungen</span>' : ''}</summary>
         ${accountForm(a)}
+        ${s.features.webmail ? smtpForm(a) : ''}
         <form method="post" action="/postfaecher/${a.id}/loeschen" class="row">${csrf(s)}<button class="btn ghost sm" data-confirm="${esc(accountLabel(a))} aus dem Sortierer entfernen? Im Postfach selbst bleibt alles, wie es ist.">Postfach entfernen</button></form>
       </details>`).join('')}
       <details class="acc"${accounts.length ? '' : ' open'}><summary><b>+ Postfach hinzufügen</b></summary>${accountForm(null)}</details>
@@ -809,6 +828,16 @@ export function createApp () {
     } catch (e) {
       back(res, to, { err: `${accountLabel(acc)}: Test fehlgeschlagen – ` + (e.authenticationFailed ? 'Benutzer oder Passwort falsch.' : errText(e)) })
     }
+  })
+  app.post('/postfaecher/:id/postausgang', async (req, res) => {
+    const b = req.body
+    const a = getAccount(req.params.id)
+    if (!a) return back(res, '/einstellungen#postfaecher', { err: 'Nicht gefunden.' })
+    const to = `/einstellungen?offen=${a.id}#postfaecher`
+    let acc
+    try { acc = saveSmtp(a.id, { host: b.host, port: b.port, secure: b.secure === '1', user: b.user, same: b.same === '1', fromName: b.fromName }, b.pass) } catch (e) { return back(res, to, { err: errText(e) }) }
+    if (b.next !== 'test') return back(res, to, { msg: 'Postausgang gespeichert.' })
+    try { await testSmtp(acc); back(res, to, { msg: `Postausgang klappt (${smtpOf(acc).host}).` }) } catch (e) { back(res, to, { err: 'Postausgang-Test fehlgeschlagen: ' + (e.code === 'EAUTH' ? 'Benutzer oder Passwort falsch.' : errText(e)) }) }
   })
   app.post('/postfaecher/:id/loeschen', (req, res) => {
     const acc = getAccount(req.params.id)

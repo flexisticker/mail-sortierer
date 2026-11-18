@@ -31,8 +31,9 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   `examplesFor` (gleicher Absender › Domain (nicht Freemail) › Wortüberlappung), Domain-Regeln gelten auch für Subdomains.
 - `src/classify.js`: eigene Adresse → aktive Regel → Kontakt Kunde (fest) / Lieferant (Hinweis) → Ollama `/api/chat` mit JSON-Schema, temperature 0,
   Beispiele als user/assistant-Paare. Unter `minConfidence` (Ausmisten `minConfidenceTrash`) → Posteingang mit Vorschlag im Grund.
-- Sicherheit: ein Konto, scrypt 2^16, Sitzung nur SHA-256, Cookie HttpOnly/SameSite=Strict, CSRF-Feld + Origin-Prüfung, 5 Fehlversuche → 15 Min.,
-  IMAP-Passwort AES-256-GCM (`secrets.js`, Schlüssel `DATA_DIR/.schluessel`). Nur Heimnetz (kein HTTPS im Container).
+- Sicherheit (ab 2.0): mehrere Nutzer, scrypt 2^16, Sitzung nur SHA-256, Cookie HttpOnly/SameSite=Lax (+Secure über HTTPS), CSRF-Feld + Origin-Prüfung,
+  5 Fehlversuche → 15 Min., **TOTP-Pflicht**, IMAP-/SMTP-Passwörter + 2FA-Geheimnis AES-256-GCM (`secrets.js`, Schlüssel `DATA_DIR/.schluessel`).
+  Von außen über NPM (HTTPS dort), `trust proxy` = loopback + uniquelocal, Angriffsschutz `shield-core.js` (Kopie aus Vedly).
 - Zweige wie bei Vedly: Entwicklung `claude/…`, **`main` = Produktivstand (`:latest`)** – jede Auslieferung auch nach `main` pushen.
   Paket auf ghcr.io ist **öffentlich** (Unraid hat für neue Pakete keine gültige Anmeldung).
 - Docker: `ghcr.io/flexisticker/mail-sortierer`, Action `.github/workflows/docker.yml` (gitleaks + npm audit vor dem Build). Unraid-Vorlage `unraid/`, Host-Port 8110.
@@ -131,3 +132,37 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Erkennung `isOrderConfirmation()`: Betreff/Dateiname bzw. Anfang des PDF-Texts (`ORDER_RE`, nicht wenn „Rechnung/Invoice …“ dabei), sonst KI-Feld `belegart` (neu im Schema);
   E-Rechnungen nie. `applyOrders()` vor jedem Durchlauf sortiert bestehende offene Einträge per Stichwort um. Knopf „Auftragsbestätigung“ (`markOrder`, lernt als Beispiel `order`),
   „Wieder öffnen“ merkt die ID in kv `orderKeepOpen` (wird dann nicht wieder automatisch umsortiert). Getestet gegen GreenMail + Ollama-Mock (Betreff, nur KI, normale Rechnung).
+- **2.0.0 (18.11.2026):** Wunsch Michael: Familie soll mitnutzen (eigene Oberfläche, gemeinsame KI), von außen erreichbar, 2FA-Pflicht, Fallen wie in Vedly,
+  regelmäßige Sicherheitsprüfung, Webmail (lesen + schreiben, HTML-Editor, Signaturen), nur gelesene sortieren, gefährliche markieren, Funktionen je Nutzer abschaltbar.
+  Entscheidungen (Vorschläge angenommen): Familie darf Ordner anlegen, gefährliche Mails bei Familie nur markieren, beliebig viele Nutzer, Verwalter sieht keine fremden Mails,
+  Verwaltung von außen nur mit erneuter Code-Eingabe, KI/Angriffsschutz nur aus dem Heimnetz.
+  - **Mehrnutzer** (`db.js`): `sysdb` = Haupt-Datenbank (users, sessions, kv für Lizenz/Angriffsschutz/`config.ollama`, `updateCheck`) **und** Daten des ersten Kontos (`users.data = ''`).
+    Weitere Nutzer: `DATA_DIR/nutzer/<id>/daten.sqlite` + `belege/`. `withUser(user, fn)` setzt den Kontext (AsyncLocalStorage); **`db` ist ein Proxy** auf die DB des aktuellen Nutzers,
+    `dataDir()` dessen Ordner, `sysGet/sysSet/sysLog` immer Haupt-DB. **Regel: keine `db.prepare` auf Modulebene** (bindet sonst an die falsche DB) – immer in Funktionen.
+    Web: nach der Anmeldung `withUser(user, next)`; Worker: `startScheduler` läuft alle aktiven Nutzer nacheinander durch, `running` je Nutzer. Ollama: globale Warteschlange (`serial` in ollama.js).
+    `getConfig()`: `ollama` immer aus sys-config (nur Verwalter darf speichern), `features` aus `users.features` (`featuresOf`, Bereiche invoices/lexware/scan/cleanup/folders/webmail;
+    Verwalter alles, neue Nutzer `SIMPLE_FEATURES`), abgeschaltete Bereiche werden in getConfig erzwungen (accountId 0 usw.), saveConfig überschreibt die gespeicherten Werte dann nicht.
+  - **Anmeldung** (`auth.js`, `totp.js`, `web-login.js`): Stufen `pw` → `enroll`/`mfa` → `full` (sessions.stage, 15 Min. bis full). TOTP RFC 6238 eigen (geprüft mit RFC-Testvektoren),
+    `totp_last` gegen Wiederverwendung, 5 falsche Codes = Sitzung weg, Notfallcodes (10, SHA-256). Sitzungen ohne 2FA (Bestand) müssen beim nächsten Aufruf einrichten.
+    Verwalter: `adminResetPassword` (Einmal-Passwort, must_change), `adminReset2fa`, `adminLogoutAll`, sperren, löschen (`dropUserData`). `reset-admin.js` setzt auch 2FA zurück.
+  - **Verwaltung** (`web-admin.js`): `/verwaltung` (Nutzer), `/verwaltung/ki`, `/verwaltung/schutz`, `/verwaltung/check`; Zugang Verwalter + (Heimnetz `isHome` oder `stepupValid` 10 Min.,
+    `/verwaltung/bestaetigen`); KI/Schutz ändern nur Heimnetz (`homeOnly`). Direkt nach der Anmeldung gilt die Bestätigung schon (stepup_at = Anmeldezeit).
+  - **Angriffsschutz** (`shield-core.js` = Kopie aus Vedly, `shield.js`): Fallen + robots-Köder `/intern/sicherung`, unsichtbarer Link `/intern/kontakt`, Honeypot + Zeitstempel im Login (`loginTrap`,
+    minMs 1200), Fehlanmeldung = Strafpunkt, nach Login `trust`. Zustand sys-kv `shield`, Einstellungen `shieldConfig` (keine Mails). `scripts/shield-check.mjs` (OK_PATHS bei neuen Seiten ergänzen!).
+    Sicherheits-Check `selfCheck()` (Schutz, 2FA aller Nutzer, HTTPS/echte IP über `noteVisitor`, Update über `updates.js` = ghcr-Label `de.flexisticker.version` von `:latest`, Lizenz).
+  - **Action**: wöchentlich Mo (schedule, baut nichts), Trivy auf node:22-slim (per Digest), Angriffsschutz-Prüfung im Job secrets; Build-Jobs `if: event != schedule`.
+  - **Sortieren je Nutzer** (`config.sorting {onlySeen, danger move|mark}`): onlySeen → nur `\Seen` einsortieren, ungelesene einmal `securityCheck` (kv `unseenChecked`), gefährlich → `markDanger`
+    (`\Flagged` + `$Phishing`). mark-Modus: Datensatz `kept` mit decision verdacht, „ist harmlos“ entfernt die Markierung.
+  - **Webmail lesen** (`webmail.js`, `web-mail.js`): Verbindung je Nutzer+Postfach 3 Min. offen, Aufrufe nacheinander. `/post/:acc` Liste (50, Suche IMAP), `/lesen`, `/inhalt` (eigenes Dokument im
+    `<iframe sandbox>` mit CSP sandbox, `img-src data:` bzw. + `https:` nach „Bilder laden“, cid-Bilder als data: eingesetzt, externe Bilder/CSS-url() ohne Freigabe entfernt – CSP allein reichte nicht),
+    `/anhang` (gefährliche 403, nur PDF/Bilder inline), `.eml`, Aktionen (gelesen, Fähnchen, verschieben – Sortiert-Ordner lernt beim nächsten Durchlauf über watchFolders –, Spam, Papierkorb;
+    ohne Papierkorb wird „Papierkorb“ angelegt). Bilder-Freigabe je Absender Tabelle `image_ok`. Seite `full` (ohne Breitenbegrenzung).
+  - **Webmail schreiben** (`compose.js`, `web-compose.js`, `public/editor.js`): SMTP je Postfach (accounts.smtp_*, Passwort gleich IMAP oder `smtp:<id>`), nodemailer 10.6 mit `envelope + raw`
+    (MailComposer, Bcc nur im Entwurf), data:-Bilder → cid-Anhänge (attachDataUrls wirkt bei MailComposer nicht!), `cleanOutgoing` (sanitize-html), `htmlToText`, Kopie in Gesendet (`\Sent` bzw. Name,
+    sonst „Gesendet“ anlegen), `\Answered`/`$Forwarded`, Entwürfe (`\Draft`, alter Entwurf wird gelöscht). Formular multipart (busboy, 25 MB, 20 Dateien) – **CSRF dort in der Route**
+    (`csrfLater`), multipart auf anderen Pfaden = 415. Editor: contenteditable + execCommand, Einfügen bereinigt, Bilder verkleinert (1600 px), Seiten mit Editor CSP `style-src 'unsafe-inline'`.
+    Signaturen Tabelle `signatures`, Standard je Postfach `sig_new`/`sig_reply`, Wechsel im Editor über `<template id="sig-N">`.
+  - Getestet: RFC-TOTP, Login-Ablauf mit 2FA/Einmal-Passwort/Reset (Playwright), Angriffsschutz (Falle → Sperre, Heimnetz nie), zwei Nutzer gegen GreenMail (getrennte Daten, onlySeen, markieren),
+    Webmail gegen GreenMail (Skript/Formular entfernt, cid-Bild, Tracker erst nach Klick, .exe gesperrt, Löschen → Papierkorb), Senden über GreenMail-SMTP (Signatur mit Logo als cid, Anhang, Antwort mit
+    In-Reply-To + \Answered, Weiterleiten mit Original-PDF, Entwurf → senden), Umzug einer 1.8-Datenbank (Daten, Ollama, Passwörter bleiben), von außen (Secure-Cookie, KI nur Heimnetz), 390 px.
+    **Nicht getestet:** echtes Alfahosting (IMAP-Schlagwort `$Phishing`, SMTP 465), echtes Handy mit Authenticator-App, Weg über NPM, große Postfächer im Webmail, Outlook-Darstellung der gesendeten Mails.

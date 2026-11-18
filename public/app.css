@@ -211,3 +211,21 @@ iframe.mbody { width: 100%; height: calc(100vh - 260px); min-height: 420px; bord
   iframe.mbody { height: 70vh; }
 }
 .mail-head form { flex: 1 1 260px; min-width: 0; } .mail-head form input[name=q] { flex: 1; min-width: 0; }
+/* ---- Schreiben ---- */
+.compose { display: grid; gap: 10px; }
+.cfields { display: grid; gap: 8px; }
+.cfields label, .compose > label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.cfields input, .cfields select { font-size: 15px; }
+.compose details summary { cursor: pointer; color: var(--muted); }
+label.nolabel { margin-top: 4px; }
+.ed-tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px 10px 0 0; background: color-mix(in srgb, var(--text) 3%, var(--card)); position: sticky; top: 0; z-index: 3; }
+.tb { min-width: 34px; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+select.tb { padding: 0 4px; } .tb:hover { border-color: var(--accent); }
+.tb.color { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; } .tb.color input { width: 22px; height: 22px; padding: 0; border: 0; background: none; }
+.editor { min-height: 320px; max-height: 65vh; overflow: auto; border: 1px solid var(--line); border-top: 0; border-radius: 0 0 10px 10px; padding: 12px 14px; background: #fff; color: #1d1d1f; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; margin-top: -10px; }
+.editor:focus { outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent); }
+.editor img { max-width: 100%; height: auto; } .editor blockquote { margin: 0 0 0 8px; border-left: 2px solid #ccc; padding-left: 8px; color: #444; }
+.editor.small-ed { min-height: 140px; }
+.compose textarea[name=text] { font: 14px/1.5 ui-monospace, Consolas, monospace; }
+.sig-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.sig-preview { margin-top: 8px; padding: 8px; background: #fff; color: #1d1d1f; border-radius: 8px; font-size: 14px; } .sig-preview img { max-width: 260px; height: auto; }
