@@ -215,3 +215,10 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   Getestet (GreenMail + Ollama-Mock): 4 Verdachts-Mails → 1 harmlos → Rückfrage mit 3 → 2 ausgewählt → Kunden 3, Verdacht 1; Sortier-Liste ohne weitere → keine Rückfrage.
 - **Betrieb (18.11.2026 abends):** Postwart läuft bei Michael und ist **von außen erreichbar unter `https://postwart.zatti.info`** (NPM → Unraid 192.168.1.10:8110, Anleitung
   `docs/ZUGRIFF-VON-AUSSEN.md`). Der zwischenzeitliche 502 lag am NPM-Eintrag, nicht an Postwart. Michael: „Alles klappt. Auch von außen.“
+- **2.8.0 (19.11.2026): Mehrere Ollama-Server** (Wunsch Michael: zusätzlich Ollama auf dem PC). `config.ollama.extra [{url, model}]` (max. 3, Modell leer = Haupt-Modell, nur Verwalter/Heimnetz).
+  `ollama.js`: `serversOf(cfg)`, Zustand je Server im Speicher (busy, downUntil, lastError, count, ms), `acquire` = freier erreichbarer Server (je Server eine Anfrage), sonst warten;
+  nicht erreichbar/Zeitüberschreitung → 3 Min. Pause, Modell fehlt (404) → 30 Min., Anfrage läuft dann auf einem anderen Server; sind alle pausiert, wird der Haupt-Server versucht (dessen Fehler bricht den Durchlauf ab wie bisher).
+  `chatJson(cfg, msgs, schema, { server })` bzw. `classify(mail, cfg, { server })` für Tests eines bestimmten Servers. Worker `processInbox`: je Zehnerpaket werden neue Mails mit `usableServers()`
+  gleichzeitig bewertet (`assess`), das Ablegen/Verschieben bleibt der Reihe nach. KI-Seite: Felder für weitere Server, Windows-Anleitung (OLLAMA_HOST=0.0.0.0, Firewall 11434, UniFi zwischen den Netzen),
+  „Speichern & alle testen“ (je Server Modell vorhanden + Testmail, `noteTest`), Zustandstabelle. Getestet (Mock-Ollama 1 s je Mail, 8 Mails): 1 Server 8,6 s, 2 Server 4,5 s (4/4 verteilt), zweiter aus 8,5 s ohne Fehler.
+  **Nicht getestet:** echtes Ollama auf Michaels PC (Erreichbarkeit zwischen 192.168.1.x und 192.168.175.x), Rechnungs-Auslesen (läuft weiter nacheinander, nutzt aber jeden freien Server).

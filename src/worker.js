@@ -6,6 +6,7 @@ import { getConfig, activeCategories, categoryById, isNight, targetLabel } from 
 import { enabledAccounts, getAccount, accountLabel, migrateAccounts } from './accounts.js'
 import { connect, withClient, ensureFolders, categoryPath, pathString, readMessages, readIds, moveMessage, findByMsgId, listFolders } from './imap.js'
 import { classify } from './classify.js'
+import { usableServers } from './ollama.js'
 import { recordCorrection, addExample, learnSender, isTrusted, isKnown, trustSender } from './learn.js'
 import { phishCheck, brandList, blocklistCheck, senderIp, pdfRisk } from './security.js'
 import { handleMailInvoice, processScans, collecting, dropForMail, applyNoDoc, applyOrders } from './invoice.js'
@@ -136,7 +137,18 @@ async function processInbox (ctx, acc, client, cfg, map, stats, started, budget)
 
     for (let i = 0; i < todo.length; i += 10) {
       if (Date.now() - started > MAX_RUN_MS) break
-      for (const m of await readMessages(client, todo.slice(i, i + 10))) {
+      const batch = await readMessages(client, todo.slice(i, i + 10))
+      // Mehrere Ollama-Server: neue Mails gleichzeitig bewerten lassen (je Server eine), danach der Reihe nach ablegen
+      const pre = new Map()
+      const fresh = batch.filter(m => !byMsgid.get(acc.id, m.msgid))
+      const n = Math.min(usableServers(cfg), fresh.length)
+      if (n > 1) {
+        let k = 0
+        await Promise.all(Array.from({ length: n }, async () => {
+          while (k < fresh.length) { const m = fresh[k++]; pre.set(m, assess(m, cfg, stats)); await pre.get(m).catch(() => {}) }
+        }))
+      }
+      for (const m of batch) {
         if (Date.now() - started > MAX_RUN_MS) break
         left--
         const rec = byMsgid.get(acc.id, m.msgid)
@@ -151,7 +163,7 @@ async function processInbox (ctx, acc, client, cfg, map, stats, started, budget)
           }
           continue
         }
-        const d = await assess(m, cfg, stats)
+        const d = await (pre.get(m) || assess(m, cfg, stats))
         stats.read++
         if (d.decision === 'inbox') { insert(acc, m, d, 'kept', 'INBOX', uv); stats.kept++; continue }
         // Gefährliche Mails nur markieren (Fähnchen + Schlagwort „Phishing“), im Posteingang lassen

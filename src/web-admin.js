@@ -10,7 +10,7 @@ import { shield, KINDS, saveShieldConfig, manualBan, selfCheck } from './shield.
 import { checkUpdate } from './updates.js'
 import { keySource, currentKeyBase64, KEY_ENV } from './secrets.js'
 import { getConfig, saveConfig, targetLabel } from './config.js'
-import { listModels, queueLength } from './ollama.js'
+import { listModels, queueLength, serverStatus, serversOf, noteTest } from './ollama.js'
 import { classify } from './classify.js'
 import { listAccounts } from './accounts.js'
 import { back, int, errText, flash } from './webutil.js'
@@ -159,33 +159,65 @@ export function registerAdmin (app) {
     const cfg = getConfig()
     const s = req.session
     const models = String(req.query.modelle || '').split(',').filter(Boolean)
+    const extra = [...(cfg.ollama.extra || []), {}, {}, {}].slice(0, 3)
+    const stat = serverStatus(cfg)
+    const ago = (t) => { if (!t) return 'noch nicht genutzt'; const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'gerade eben' : m < 60 ? `vor ${m} Min.` : `vor ${Math.round(m / 60)} Std.` }
+    const statusRows = stat.map(x => `<tr><td>${x.main ? '<b>Haupt-Server</b>' : 'Weiterer Server'}<div class="muted small mono">${esc(x.url)}</div></td><td>${esc(x.model)}</td>
+      <td>${x.down ? `<span class="pill warn">pausiert</span><div class="small warn-text">${esc(x.lastError).slice(0, 140)}</div>` : x.busy ? '<span class="pill info">arbeitet</span>' : x.lastError ? `<span class="pill warn">Fehler</span><div class="small warn-text">${esc(x.lastError).slice(0, 140)}</div>` : '<span class="pill good">bereit</span>'}</td>
+      <td class="small">${x.count} Mails · ${x.ms ? (x.ms / 1000).toFixed(1) + ' s je Mail' : '–'}<div class="muted">${ago(x.lastOk)}</div></td></tr>`).join('')
     const body = `<h1>System</h1>${tabs('/verwaltung/ki')}
     <section class="card" id="ki"><h2>Gemeinsame KI (Ollama)</h2>
-      <p class="muted">Die KI läuft bei dir – nichts geht ins Internet. Alle Nutzer teilen sich diese eine KI; die Anfragen laufen nacheinander (gerade in der Warteschlange: ${queueLength()}). ${PLATFORM === 'windows' ? 'Dafür „Ollama für Windows“ von ollama.com installieren (läuft dann unter <code>http://localhost:11434</code>) oder die Adresse eines Ollama-Servers im Netzwerk eintragen.' : 'Ollama-Adresse z. B. <code>http://&lt;Server-IP&gt;:11434</code>.'} Empfohlen mit Grafikkarte ab 6 GB: <code>qwen2.5:7b</code>; kleinere Karte: <code>qwen2.5:3b</code>.</p>
+      <p class="muted">Die KI läuft bei dir – nichts geht ins Internet. Alle Nutzer teilen sich die KI (gerade in der Warteschlange: ${queueLength()}). ${PLATFORM === 'windows' ? 'Dafür „Ollama für Windows“ von ollama.com installieren (läuft dann unter <code>http://localhost:11434</code>) oder die Adresse eines Ollama-Servers im Netzwerk eintragen.' : 'Ollama-Adresse z. B. <code>http://&lt;Server-IP&gt;:11434</code>.'} Empfohlen mit Grafikkarte ab 6 GB: <code>qwen2.5:7b</code>; kleinere Karte: <code>qwen2.5:3b</code>.</p>
       ${s.home ? '' : '<div class="alert info">Nur aus dem Heimnetz änderbar.</div>'}
       <form method="post" action="/verwaltung/ki" class="form two">${csrf(s)}
-        <label>Ollama-Adresse<input name="url" value="${esc(cfg.ollama.url)}" maxlength="200"></label>
+        <label>Ollama-Adresse (Haupt-Server)<input name="url" value="${esc(cfg.ollama.url)}" maxlength="200"></label>
         <label>Modell<input name="model" value="${esc(cfg.ollama.model)}" list="modelle" maxlength="100"><datalist id="modelle">${models.map(m => `<option value="${esc(m)}">`).join('')}</datalist></label>
         <label>Wartezeit je Mail (Sekunden)<input name="timeoutSec" type="number" value="${esc(cfg.ollama.timeoutSec)}" min="10" max="900"></label>
         <label>Kontextgröße (Tokens)<input name="numCtx" type="number" value="${esc(cfg.ollama.numCtx)}" min="1024" max="32768" step="512"></label>
-        <div class="row span"><button class="btn primary" name="next" value="save"${s.home ? '' : ' disabled'}>Speichern</button><button class="btn" name="next" value="test"${s.home ? '' : ' disabled'}>Speichern &amp; testen</button></div>
+        <h3 class="span">Weitere Ollama-Server (optional, z. B. dein PC)</h3>
+        <p class="muted small span">Postwart verteilt die Mails dann auf alle Server gleichzeitig – mit zwei Servern etwa doppelt so schnell. Ist ein Server aus (PC ausgeschaltet), wird er ein paar Minuten übersprungen und danach wieder mitgenutzt. Modell leer = wie beim Haupt-Server (es muss auf dem Server geladen sein).</p>
+        ${extra.map((x, i) => `<label>Adresse ${i + 2}<input name="xurl${i}" value="${esc(x.url || '')}" maxlength="200" placeholder="z. B. http://192.168.175.20:11434"></label>
+        <label>Modell ${i + 2}<input name="xmodel${i}" value="${esc(x.model || '')}" maxlength="100" placeholder="wie oben" list="modelle"></label>`).join('')}
+        <details class="span way small"><summary>So machst du Ollama auf dem Windows-PC fürs Netzwerk erreichbar</summary><ol class="steps-big small">
+          <li>Windows-Taste → „Umgebungsvariablen“ → <b>„Systemumgebungsvariablen bearbeiten“</b> → Umgebungsvariablen → bei <b>Benutzervariablen</b> „Neu“: Name <code>OLLAMA_HOST</code>, Wert <code>0.0.0.0</code>.</li>
+          <li>Ollama beenden (Symbol unten rechts → Quit) und neu starten.</li>
+          <li>Windows-Firewall: eingehend <b>TCP 11434</b> erlauben (Windows fragt beim ersten Zugriff meist selbst – „Privat“ zulassen).</li>
+          <li>Modell laden: Eingabeaufforderung → <code>ollama pull ${esc(cfg.ollama.model || 'qwen2.5:7b')}</code></li>
+          <li>IP des PCs herausfinden: Eingabeaufforderung → <code>ipconfig</code> → „IPv4-Adresse“, oben als <code>http://&lt;IP&gt;:11434</code> eintragen. Am besten der PC bekommt in der UniFi eine feste IP.</li>
+          <li>Liegt der PC in einem anderen Netz als der Server (z. B. 192.168.175.x und 192.168.1.x), muss die Firewall der UniFi den Zugriff vom Server auf Port 11434 erlauben.</li>
+        </ol></details>
+        <div class="row span"><button class="btn primary" name="next" value="save"${s.home ? '' : ' disabled'}>Speichern</button><button class="btn" name="next" value="test"${s.home ? '' : ' disabled'}>Speichern &amp; alle testen</button></div>
       </form>
-      ${models.length ? `<p class="small">Gefundene Modelle: ${models.map(esc).join(', ')}</p>` : ''}</section>`
+      ${models.length ? `<p class="small">Gefundene Modelle (Haupt-Server): ${models.map(esc).join(', ')}</p>` : ''}
+      <h3>Zustand</h3><div class="table-wrap"><table class="tbl"><thead><tr><th>Server</th><th>Modell</th><th>Zustand</th><th>Seit dem Start</th></tr></thead><tbody>${statusRows || '<tr><td colspan="4" class="muted">Noch kein Server eingetragen.</td></tr>'}</tbody></table></div></section>`
     res.send(page({ title: 'Gemeinsame KI', body, session: s, path: '/verwaltung', ...flash(req) }))
   })
   app.post('/verwaltung/ki', homeOnly, async (req, res) => {
     const b = req.body
-    const cfg = saveConfig({ ollama: { url: String(b.url || '').trim().slice(0, 200), model: String(b.model || '').trim().slice(0, 100), timeoutSec: int(b.timeoutSec, 10, 900, 120), numCtx: int(b.numCtx, 1024, 32768, 4096) } })
-    if (b.next !== 'test') return back(res, '/verwaltung/ki', { msg: 'Gespeichert – gilt für alle Nutzer.' })
-    let models = []
-    try {
-      models = await listModels(cfg)
-      const names = models.map(m => m.name)
-      if (!names.some(n => n === cfg.ollama.model || n === cfg.ollama.model + ':latest')) return back(res, `/verwaltung/ki?modelle=${encodeURIComponent(names.join(','))}`, { err: `Ollama erreichbar, aber Modell „${cfg.ollama.model}“ ist nicht geladen. Auf dem Server: ollama pull ${cfg.ollama.model}` })
-      const t0 = Date.now()
-      const d = await classify({ msgid: 'test', from_addr: 'versand@paketdienst.example', from_name: 'Paketdienst', domain: 'paketdienst.example', subject: 'Ihre Sendung 00340434161094042557 ist unterwegs', hints: 'Absender ist eine automatische Adresse', snippet: 'Guten Tag, Ihre Sendung wurde heute an uns übergeben und wird voraussichtlich morgen zugestellt.' }, { ...cfg, maxExamples: 0 })
-      back(res, `/verwaltung/ki?modelle=${encodeURIComponent(names.join(','))}`, { msg: `KI antwortet in ${((Date.now() - t0) / 1000).toFixed(1)} s. Testmail (Paket) → „${targetLabel(d.decision, cfg)}“ (${d.confidence} %): ${d.reason}` })
-    } catch (e) { back(res, `/verwaltung/ki?modelle=${encodeURIComponent(models.map(m => m.name).join(','))}`, { err: 'KI-Test fehlgeschlagen: ' + errText(e) }) }
+    const extra = [0, 1, 2].map(i => ({ url: String(b['xurl' + i] || '').trim().replace(/\/+$/, '').slice(0, 200), model: String(b['xmodel' + i] || '').trim().slice(0, 100) }))
+      .filter(x => x.url)
+    const bad = extra.find(x => !/^https?:\/\/[^\s/]+$/.test(x.url))
+    if (bad) return back(res, '/verwaltung/ki', { err: `Adresse „${bad.url}“ ist ungültig – Beispiel: http://192.168.175.20:11434` })
+    const cfg = saveConfig({ ollama: { url: String(b.url || '').trim().slice(0, 200), model: String(b.model || '').trim().slice(0, 100), timeoutSec: int(b.timeoutSec, 10, 900, 120), numCtx: int(b.numCtx, 1024, 32768, 4096), extra } })
+    if (b.next !== 'test') return back(res, '/verwaltung/ki', { msg: `Gespeichert – gilt für alle Nutzer${extra.length ? ` (${extra.length + 1} Server)` : ''}.` })
+    const test = { msgid: 'test', from_addr: 'versand@paketdienst.example', from_name: 'Paketdienst', domain: 'paketdienst.example', subject: 'Ihre Sendung 00340434161094042557 ist unterwegs', hints: 'Absender ist eine automatische Adresse', snippet: 'Guten Tag, Ihre Sendung wurde heute an uns übergeben und wird voraussichtlich morgen zugestellt.' }
+    const results = []
+    let mainModels = []
+    for (const srv of serversOf(cfg)) {
+      const label = srv.main ? 'Haupt-Server' : srv.url
+      try {
+        const names = (await listModels(cfg, srv.url)).map(m => m.name)
+        if (srv.main) mainModels = names
+        if (!names.some(n => n === srv.model || n === srv.model + ':latest')) { noteTest(srv.url, `Modell „${srv.model}“ fehlt`); results.push({ ok: false, t: `${label}: erreichbar, aber Modell „${srv.model}“ fehlt – dort ausführen: ollama pull ${srv.model}` }); continue }
+        noteTest(srv.url, '')
+        const t0 = Date.now()
+        const d = await classify(test, { ...cfg, maxExamples: 0 }, { server: srv.url })
+        results.push({ ok: true, t: `${label}: antwortet in ${((Date.now() - t0) / 1000).toFixed(1)} s (${srv.model}) → „${targetLabel(d.decision, cfg)}“` })
+      } catch (e) { noteTest(srv.url, errText(e)); results.push({ ok: false, t: `${label}: ${errText(e)}` }) }
+    }
+    const to = `/verwaltung/ki?modelle=${encodeURIComponent(mainModels.join(','))}`
+    const text = results.map(r => (r.ok ? '✓ ' : '✗ ') + r.t).join(' · ')
+    back(res, to, results.every(r => r.ok) ? { msg: text } : { err: text })
   })
 
   // ---------------- Angriffsschutz ----------------

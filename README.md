@@ -78,6 +78,11 @@ Kein Mailinhalt verlässt dein Netz. **Es wird nichts gelöscht** – nur versch
 - Knopf oben rechts: **automatisch · hell · dunkel** (je Gerät gemerkt).
 - Einstellungen in Bereiche geteilt (Allgemein, Postfächer, Sortieren, Ordner, Rechnungen, Sicherheit, Mein Konto), Ordner als aufklappbare Zeilen.
 
+## Mehrere KI-Server (ab 2.8)
+
+Unter Verwaltung → System → Gemeinsame KI lassen sich bis zu drei weitere Ollama-Server eintragen (z. B. der eigene PC). Postwart verteilt die Mails
+gleichzeitig auf alle erreichbaren Server; ein ausgeschalteter Server wird ein paar Minuten übersprungen. Anleitung für Windows (OLLAMA_HOST, Firewall) steht auf der Seite.
+
 ## Zwei-Faktor einrichten (Anleitung)
 
 Schritt für Schritt für Nutzer, auch direkt am Handy mit Authy: [docs/ZWEI-FAKTOR.md](docs/ZWEI-FAKTOR.md). Dieselbe Anleitung steht auf der Einrichtungsseite.

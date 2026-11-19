@@ -54,7 +54,7 @@ function describe (mail, extra = []) {
   ].filter(Boolean).join('\n')
 }
 
-export async function classify (mail, cfg) {
+export async function classify (mail, cfg, opts = {}) {
   const own = ownAddresses(cfg)
   if (mail.from_addr && own.includes(mail.from_addr)) {
     return { decision: 'inbox', source: 'own', confidence: 100, reason: 'eigene Adresse' }
@@ -79,7 +79,7 @@ export async function classify (mail, cfg) {
   }
   messages.push({ role: 'user', content: describe(mail, extra) })
 
-  const r = await chatJson(cfg, messages, schema(ids))
+  const r = await chatJson(cfg, messages, schema(ids), opts)
   let cat = String(r.kategorie || '').toLowerCase()
   if (cat === 'posteingang') cat = 'inbox'
   if (cat !== 'inbox' && !ids.includes(cat)) cat = 'inbox'

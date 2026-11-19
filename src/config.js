@@ -55,7 +55,7 @@ export const DEFAULT_CONFIG = {
   },
   webmail: { mobileDays: 14 }, // Mail-Programm: am Handy/Tablet nur die letzten n Tage zeigen (0 = alle)
   business: { name: '', description: '' }, // Betrieb – nur als Hintergrund für die KI
-  ollama: { url: PLATFORM === 'windows' ? 'http://localhost:11434' : '', model: 'qwen2.5:7b', timeoutSec: 120, numCtx: 4096 },
+  ollama: { url: PLATFORM === 'windows' ? 'http://localhost:11434' : '', model: 'qwen2.5:7b', timeoutSec: 120, numCtx: 4096, extra: [] }, // extra: weitere Ollama-Server [{url, model}]
   root: 'Sortiert',
   categories: DEFAULT_CATEGORIES,
   paused: false,
