@@ -222,3 +222,4 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   gleichzeitig bewertet (`assess`), das Ablegen/Verschieben bleibt der Reihe nach. KI-Seite: Felder für weitere Server, Windows-Anleitung (OLLAMA_HOST=0.0.0.0, Firewall 11434, UniFi zwischen den Netzen),
   „Speichern & alle testen“ (je Server Modell vorhanden + Testmail, `noteTest`), Zustandstabelle. Getestet (Mock-Ollama 1 s je Mail, 8 Mails): 1 Server 8,6 s, 2 Server 4,5 s (4/4 verteilt), zweiter aus 8,5 s ohne Fehler.
   **Nicht getestet:** echtes Ollama auf Michaels PC (Erreichbarkeit zwischen 192.168.1.x und 192.168.175.x), Rechnungs-Auslesen (läuft weiter nacheinander, nutzt aber jeden freien Server).
+- **2.8.1:** Michael hat auf dem PC schon ein anderes Qwen-Modell – kein Download nötig: KI-Test nennt bei fehlendem Modell die auf dem Server vorhandenen (`/api/tags`), Anleitung zeigt `ollama list` statt `ollama pull`.

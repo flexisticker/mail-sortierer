@@ -182,7 +182,7 @@ export function registerAdmin (app) {
           <li>Windows-Taste → „Umgebungsvariablen“ → <b>„Systemumgebungsvariablen bearbeiten“</b> → Umgebungsvariablen → bei <b>Benutzervariablen</b> „Neu“: Name <code>OLLAMA_HOST</code>, Wert <code>0.0.0.0</code>.</li>
           <li>Ollama beenden (Symbol unten rechts → Quit) und neu starten.</li>
           <li>Windows-Firewall: eingehend <b>TCP 11434</b> erlauben (Windows fragt beim ersten Zugriff meist selbst – „Privat“ zulassen).</li>
-          <li>Modell laden: Eingabeaufforderung → <code>ollama pull ${esc(cfg.ollama.model || 'qwen2.5:7b')}</code></li>
+          <li>Vorhandene Modelle anzeigen: Eingabeaufforderung → <code>ollama list</code>. Den Namen aus der ersten Spalte (z. B. <code>qwen3:8b</code>) oben bei „Modell“ eintragen – ein anderes Modell als auf dem Haupt-Server ist in Ordnung. Nur wenn noch keins da ist: <code>ollama pull ${esc(cfg.ollama.model || 'qwen2.5:7b')}</code></li>
           <li>IP des PCs herausfinden: Eingabeaufforderung → <code>ipconfig</code> → „IPv4-Adresse“, oben als <code>http://&lt;IP&gt;:11434</code> eintragen. Am besten der PC bekommt in der UniFi eine feste IP.</li>
           <li>Liegt der PC in einem anderen Netz als der Server (z. B. 192.168.175.x und 192.168.1.x), muss die Firewall der UniFi den Zugriff vom Server auf Port 11434 erlauben.</li>
         </ol></details>
@@ -208,7 +208,7 @@ export function registerAdmin (app) {
       try {
         const names = (await listModels(cfg, srv.url)).map(m => m.name)
         if (srv.main) mainModels = names
-        if (!names.some(n => n === srv.model || n === srv.model + ':latest')) { noteTest(srv.url, `Modell „${srv.model}“ fehlt`); results.push({ ok: false, t: `${label}: erreichbar, aber Modell „${srv.model}“ fehlt – dort ausführen: ollama pull ${srv.model}` }); continue }
+        if (!names.some(n => n === srv.model || n === srv.model + ':latest')) { noteTest(srv.url, `Modell „${srv.model}“ fehlt`); results.push({ ok: false, t: `${label}: erreichbar, aber Modell „${srv.model}“ fehlt. ${names.length ? `Dort vorhanden: ${names.join(', ')} – einen davon bei „Modell“ eintragen` : 'Dort ist noch kein Modell geladen – z. B. ollama pull ' + srv.model}.` }); continue }
         noteTest(srv.url, '')
         const t0 = Date.now()
         const d = await classify(test, { ...cfg, maxExamples: 0 }, { server: srv.url })
