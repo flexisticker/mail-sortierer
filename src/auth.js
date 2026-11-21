@@ -95,8 +95,36 @@ function fail (key) {
   else { f.count++; f.at = Date.now() }
   if (fails.size > 10000) fails.clear()
 }
-export const unlockName = (name) => fails.delete('name:' + String(name || '').toLowerCase())
-export const isLockedName = (name) => !!tooMany('name:' + String(name || '').toLowerCase())
+// Zwei-Faktor: falsche Codes je Konto, dauerhaft in users (überlebt Neustart und neue Sitzungen).
+// Kundenvorgabe 21.11.2026 (alle Projekte): höchstens 10 Fehlversuche, dann Sperre.
+export const MFA_MAX = 10
+const MFA_WINDOW = 24 * 3600 * 1000 // Fehlversuche zählen 24 Std. ab dem letzten
+const MFA_LOCK = 24 * 3600 * 1000   // so lange ist die Anmeldung danach gesperrt
+let onMfaLock = () => {}
+/** Wird bei einer neuen 2FA-Sperre aufgerufen: fn(ip, user) – z. B. IP im Angriffsschutz sperren */
+export const setMfaLockHook = (fn) => { onMfaLock = fn }
+export const mfaLockedUntil = (u) => u && Number(u.mfa_locked_until) > Date.now() ? Number(u.mfa_locked_until) : 0
+const untilText = (ms) => new Date(ms).toLocaleString('de-DE', { timeZone: process.env.TZ || 'Europe/Berlin', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+export const mfaLockText = (ms) => `Zu viele falsche Zwei-Faktor-Codes – die Anmeldung ist bis ${untilText(ms)} Uhr gesperrt (auch mit Notfallcode). Der Verwalter kann die Sperre aufheben.`
+/** Falscher Code: zählen, beim 10. sperren (Konto 24 Std., alle Sitzungen weg). Liefert die Sperrzeit oder 0. */
+function mfaFail (u, ip) {
+  const t = Date.now()
+  const n = t - Number(u.mfa_fail_at || 0) > MFA_WINDOW ? 1 : Number(u.mfa_fails || 0) + 1
+  if (n < MFA_MAX) { db.prepare('UPDATE users SET mfa_fails = ?, mfa_fail_at = ? WHERE id = ?').run(n, t, u.id); return 0 }
+  const until = t + MFA_LOCK
+  db.prepare('UPDATE users SET mfa_fails = ?, mfa_fail_at = ?, mfa_locked_until = ? WHERE id = ?').run(n, t, until, u.id)
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)
+  sysLog('warn', `${u.name}: ${n} falsche Zwei-Faktor-Codes – Anmeldung 24 Std. gesperrt (zuletzt von ${String(ip || '?').slice(0, 64)})`)
+  try { onMfaLock(ip, u) } catch { /* Sperre im Konto gilt trotzdem */ }
+  return until
+}
+const mfaOk = (u) => { if (u.mfa_fails || u.mfa_locked_until) db.prepare('UPDATE users SET mfa_fails = 0, mfa_fail_at = 0, mfa_locked_until = 0 WHERE id = ?').run(u.id) }
+const clearMfaLock = (name) => db.prepare('UPDATE users SET mfa_fails = 0, mfa_fail_at = 0, mfa_locked_until = 0 WHERE lower(name) = ?').run(String(name || '').toLowerCase())
+
+/** Hebt Login-Bremse und 2FA-Sperre eines Kontos auf (Verwalter) */
+export const unlockName = (name) => { clearMfaLock(name); return fails.delete('name:' + String(name || '').toLowerCase()) }
+export const isLockedName = (name) => !!tooMany('name:' + String(name || '').toLowerCase()) ||
+  !!mfaLockedUntil(db.prepare('SELECT mfa_locked_until FROM users WHERE lower(name) = ?').get(String(name || '').toLowerCase()))
 
 const DUMMY = 'scrypt$16$AAAAAAAAAAAAAAAAAAAAAA==$' + Buffer.alloc(64).toString('base64')
 const nextStage = (u) => u.must_change ? 'pw' : (u.totp_on ? 'mfa' : 'enroll')
@@ -111,6 +139,7 @@ export async function login (name, pw, ip, remember = true) {
     return { error: 'Benutzername oder Passwort falsch.', failed: true }
   }
   if (u.disabled) return { error: 'Dieser Zugang ist gesperrt. Bitte den Verwalter fragen.' }
+  if (mfaLockedUntil(u)) return { error: mfaLockText(mfaLockedUntil(u)), locked: true }
   fails.delete('ip:' + ip); fails.delete('name:' + lname)
   const token = crypto.randomBytes(32).toString('base64url')
   const csrf = crypto.randomBytes(24).toString('base64url')
@@ -180,11 +209,17 @@ function tooManyTries (session) {
 }
 
 /** Einrichtung abschließen: erster Code aus der App → 2FA an, Notfallcodes werden einmal angezeigt */
-export function finishEnroll (session, code) {
+export function finishEnroll (session, code, { ip = '' } = {}) {
   const u = getUser(session.userId)
+  if (mfaLockedUntil(u)) { db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id); return { error: 'locked', until: mfaLockedUntil(u) } }
   const sec = decrypt(u.totp_secret)
   const step = sec ? verifyTotp(sec, code, 0) : 0
-  if (!step) return { error: tooManyTries(session) ? 'gone' : 'Der Code stimmt nicht – bitte den aktuellen Code aus der App eingeben (Uhrzeit am Handy prüfen).' }
+  if (!step) {
+    const until = mfaFail(u, ip)
+    if (until) return { error: 'locked', until }
+    return { error: tooManyTries(session) ? 'gone' : 'Der Code stimmt nicht – bitte den aktuellen Code aus der App eingeben (Uhrzeit am Handy prüfen).' }
+  }
+  mfaOk(u)
   const rc = newRecoveryCodes()
   db.prepare('UPDATE users SET totp_on = 1, totp_last = ?, recovery = ? WHERE id = ?').run(step, JSON.stringify(rc.hashes), u.id)
   sysLog('info', `${u.name}: Zwei-Faktor-Anmeldung eingerichtet`)
@@ -193,8 +228,9 @@ export function finishEnroll (session, code) {
 }
 
 /** Code (oder Notfallcode) prüfen – für die Anmeldung (Stufe mfa) und für die Bestätigung vor Verwaltungsaufgaben */
-export function checkSecondFactor (session, code, { stepup = false } = {}) {
+export function checkSecondFactor (session, code, { stepup = false, ip = '' } = {}) {
   const u = getUser(session.userId)
+  if (mfaLockedUntil(u)) { db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id); return { error: 'locked', until: mfaLockedUntil(u) } }
   const sec = decrypt(u.totp_secret)
   let how = ''
   const step = sec && u.totp_on ? verifyTotp(sec, code, u.totp_last) : 0
@@ -204,7 +240,12 @@ export function checkSecondFactor (session, code, { stepup = false } = {}) {
     const rest = useRecoveryCode(list, code)
     if (rest) { db.prepare('UPDATE users SET recovery = ? WHERE id = ?').run(JSON.stringify(rest), u.id); how = 'notfallcode'; sysLog('warn', `${u.name}: mit Notfallcode angemeldet (${rest.length} übrig)`) }
   }
-  if (!how) return { error: tooManyTries(session) ? 'gone' : 'Der Code stimmt nicht.' }
+  if (!how) {
+    const until = mfaFail(u, ip)
+    if (until) return { error: 'locked', until }
+    return { error: tooManyTries(session) ? 'gone' : 'Der Code stimmt nicht.' }
+  }
+  mfaOk(u)
   if (stepup) db.prepare('UPDATE sessions SET stepup_at = ?, tries = 0 WHERE token_hash = ?').run(Date.now(), session.tokenHash)
   else advance(session)
   return { ok: true, how, left: how === 'notfallcode' ? JSON.parse(getUser(u.id).recovery || '[]').length : null }
@@ -240,7 +281,7 @@ export async function adminResetPassword (userId, by) {
 export function adminReset2fa (userId, by) {
   const u = getUser(userId)
   if (!u) throw new Error('Nutzer nicht gefunden.')
-  db.prepare('UPDATE users SET totp_on = 0, totp_secret = NULL, recovery = NULL, totp_last = 0, notice = ? WHERE id = ?')
+  db.prepare('UPDATE users SET totp_on = 0, totp_secret = NULL, recovery = NULL, totp_last = 0, mfa_fails = 0, mfa_fail_at = 0, mfa_locked_until = 0, notice = ? WHERE id = ?')
     .run('Deine Zwei-Faktor-Anmeldung wurde vom Verwalter zurückgesetzt. Bitte richte sie jetzt neu ein.', u.id)
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)
   sysLog('warn', `Verwalter ${by}: Zwei-Faktor-Anmeldung von „${u.name}“ zurückgesetzt`)

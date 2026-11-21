@@ -1,6 +1,6 @@
 // Anmeldung: Ersteinrichtung, Passwort, Zwei-Faktor (Pflicht), neues Passwort nach Zurücksetzen, Abmelden.
 import { page, esc, csrf } from './html.js'
-import { hasUsers, createUser, login, logout, setOwnPassword, enrollSecret, finishEnroll, checkSecondFactor, getUser } from './auth.js'
+import { hasUsers, createUser, login, logout, setOwnPassword, enrollSecret, finishEnroll, checkSecondFactor, getUser, setMfaLockHook, mfaLockText, MFA_MAX } from './auth.js'
 import { otpauthUri, qrSvg } from './totp.js'
 import { sysLog } from './db.js'
 import { shield, loginTrap, checkLoginForm } from './shield.js'
@@ -9,6 +9,15 @@ import { COOKIE, sessionCookie, clearCookie, cookie, back, flash } from './webut
 const STAGE_PAGE = { pw: '/anmelden/passwort', enroll: '/anmelden/einrichten-2fa', mfa: '/anmelden/code', full: '/' }
 const goStage = (res, stage) => res.redirect(303, STAGE_PAGE[stage] || '/')
 const noticeBox = (s) => s && s.notice ? `<div class="alert info">${esc(s.notice)}</div>` : ''
+
+// 10. falscher Zwei-Faktor-Code: IP sofort sperren (Heimnetz/Ausnahmen bleiben frei – dort greift die Kontosperre)
+setMfaLockHook((ip, u) => shield.strike(ip, 'login', { where: 'app', path: '/anmelden/code', points: 10, detail: `${MFA_MAX} falsche Zwei-Faktor-Codes (${String(u.name).slice(0, 40)})` }))
+
+/** Konto wegen falscher 2FA-Codes gesperrt: Cookie weg, zurück zur Anmeldung mit Hinweis */
+export function mfaLocked (req, res, until) {
+  res.set('Set-Cookie', clearCookie(req.secure))
+  back(res, '/anmelden', { err: mfaLockText(until) })
+}
 
 export function registerLogin (app) {
   // --- Ersteinrichtung (nur solange es noch kein Konto gibt) ---
@@ -135,14 +144,15 @@ export function registerLogin (app) {
           <li>Immer den <b>aktuellen</b> Code nehmen – jeder gilt nur 30 Sekunden (kurz davor und danach wird er noch angenommen).</li>
           <li>Zeigt die App 7 oder 8 Ziffern, den Eintrag löschen und mit <b>6 Ziffern</b> neu anlegen.</li>
           <li>Authy fragt beim ersten Start nach Handynummer und E-Mail – das ist für Authy selbst, nicht für Postwart.</li>
-          <li>Nach fünf falschen Codes musst du dich neu anmelden. Der Schlüssel bleibt gleich, bis die Einrichtung geklappt hat.</li>
+          <li>Nach fünf falschen Codes musst du dich neu anmelden, nach zehn ist die Anmeldung 24 Stunden gesperrt. Der Schlüssel bleibt gleich, bis die Einrichtung geklappt hat.</li>
         </ul>
       </details>
       <form method="post" action="/abmelden">${csrf(req.session)}<button class="link">Abbrechen und abmelden</button></form></section>`
     }))
   })
   app.post('/anmelden/einrichten-2fa', inStage('enroll'), (req, res) => {
-    const r = finishEnroll(req.session, req.body.code)
+    const r = finishEnroll(req.session, req.body.code, { ip: req.ip })
+    if (r.error === 'locked') return mfaLocked(req, res, r.until)
     if (r.error === 'gone') return lostSession(req, res)
     if (r.error) return back(res, '/anmelden/einrichten-2fa', { err: r.error })
     shield.trust(req.ip)
@@ -169,7 +179,8 @@ export function registerLogin (app) {
     }))
   })
   app.post('/anmelden/code', inStage('mfa'), (req, res) => {
-    const r = checkSecondFactor(req.session, req.body.code)
+    const r = checkSecondFactor(req.session, req.body.code, { ip: req.ip })
+    if (r.error === 'locked') return mfaLocked(req, res, r.until)
     if (r.error === 'gone') return lostSession(req, res)
     if (r.error) return back(res, '/anmelden/code', { err: r.error })
     shield.trust(req.ip)

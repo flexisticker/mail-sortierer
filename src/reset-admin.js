@@ -15,7 +15,7 @@ if (!name) {
 const pw = oneTimePassword()
 const u = db.prepare('SELECT * FROM users WHERE lower(name) = lower(?)').get(name)
 if (u) {
-  db.prepare("UPDATE users SET hash = ?, must_change = 1, disabled = 0, totp_on = 0, totp_secret = NULL, recovery = NULL, notice = ? WHERE id = ?")
+  db.prepare("UPDATE users SET hash = ?, must_change = 1, disabled = 0, totp_on = 0, totp_secret = NULL, recovery = NULL, mfa_fails = 0, mfa_fail_at = 0, mfa_locked_until = 0, notice = ? WHERE id = ?")
     .run(await hashPassword(pw), 'Notfall-Zugang benutzt: bitte eigenes Passwort vergeben und die Authenticator-App neu einrichten.', u.id)
   if (u.role !== 'admin' && process.argv[3] === '--verwalter') db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(u.id)
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)

@@ -9,7 +9,7 @@ import { db, now, log, withUser } from './db.js'
 import { hasUsers, sessionFor, getUser, featuresOf, verifyPassword, changePassword, checkSecondFactor, regenerateRecovery, recoveryLeft } from './auth.js'
 import { COOKIE, sessionCookie, cookie, back, int, errText, flash } from './webutil.js'
 import { shield, noteVisitor, isHome } from './shield.js'
-import { registerLogin } from './web-login.js'
+import { registerLogin, mfaLocked } from './web-login.js'
 import { registerAdmin } from './web-admin.js'
 import { registerMail } from './web-mail.js'
 import { registerCompose } from './web-compose.js'
@@ -1091,7 +1091,8 @@ export function createApp () {
     back(res, '/einstellungen#konto', { msg: 'Passwort geändert – andere Geräte sind abgemeldet.' })
   })
   app.post('/einstellungen/notfallcodes', (req, res) => {
-    const r = checkSecondFactor(req.session, req.body.code, { stepup: true })
+    const r = checkSecondFactor(req.session, req.body.code, { stepup: true, ip: req.ip })
+    if (r.error === 'locked') return mfaLocked(req, res, r.until)
     if (r.error === 'gone') return res.redirect(303, '/anmelden')
     if (r.error) return back(res, '/einstellungen#konto', { err: r.error })
     const codes = regenerateRecovery(req.session.userId)

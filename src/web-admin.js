@@ -4,9 +4,10 @@ import { page, esc, csrf, fmtDate, options } from './html.js'
 import { sysdb, withUser } from './db.js'
 import {
   listUsers, getUser, createUser, oneTimePassword, FEATURES, FULL_FEATURES, SIMPLE_FEATURES, featuresOf, validName,
-  adminResetPassword, adminReset2fa, adminLogoutAll, adminSetDisabled, adminSetUser, adminDeleteUser, checkSecondFactor, stepupValid, isLockedName, unlockName
+  adminResetPassword, adminReset2fa, adminLogoutAll, adminSetDisabled, adminSetUser, adminDeleteUser, checkSecondFactor, stepupValid, isLockedName, unlockName, mfaLockedUntil
 } from './auth.js'
 import { shield, KINDS, saveShieldConfig, manualBan, selfCheck } from './shield.js'
+import { mfaLocked } from './web-login.js'
 import { checkUpdate } from './updates.js'
 import { keySource, currentKeyBase64, KEY_ENV } from './secrets.js'
 import { getConfig, saveConfig, targetLabel } from './config.js'
@@ -47,7 +48,8 @@ export function registerAdmin (app) {
   })
   app.post('/verwaltung/bestaetigen', (req, res) => {
     const weiter = /^\/verwaltung(\/|$|\?)/.test(String(req.body.weiter || '')) ? String(req.body.weiter) : '/verwaltung'
-    const r = checkSecondFactor(req.session, req.body.code, { stepup: true })
+    const r = checkSecondFactor(req.session, req.body.code, { stepup: true, ip: req.ip })
+    if (r.error === 'locked') return mfaLocked(req, res, r.until)
     if (r.error === 'gone') return res.redirect(303, '/anmelden')
     if (r.error) return back(res, '/verwaltung/bestaetigen?weiter=' + encodeURIComponent(weiter), { err: r.error })
     res.redirect(303, weiter)
@@ -69,7 +71,7 @@ export function registerAdmin (app) {
       ${users.map(u => { const f = featuresOf(u); return `<details class="acc"${String(req.query.offen) === String(u.id) ? ' open' : ''}><summary><b>${esc(u.display || u.name)}</b> <span class="muted small">${esc(u.name)}</span>
         ${u.role === 'admin' ? '<span class="pill info">Verwalter</span>' : ''}
         ${u.totp_on ? '<span class="pill good">2FA</span>' : '<span class="pill warn">2FA fehlt</span>'}
-        ${u.must_change ? '<span class="pill warn">Einmal-Passwort</span>' : ''}${u.disabled ? '<span class="pill bad">gesperrt</span>' : ''}${isLockedName(u.name) ? '<span class="pill bad">Fehlversuche</span>' : ''}</summary>
+        ${u.must_change ? '<span class="pill warn">Einmal-Passwort</span>' : ''}${u.disabled ? '<span class="pill bad">gesperrt</span>' : ''}${isLockedName(u.name) ? `<span class="pill bad">${mfaLockedUntil(u) ? '2FA gesperrt' : 'Fehlversuche'}</span>` : ''}</summary>
         <dl class="facts"><dt>Zuletzt angemeldet</dt><dd>${u.last_login ? fmtDate(u.last_login) : 'noch nie'}</dd><dt>Angemeldete Geräte</dt><dd>${sessions[u.id] || 0}</dd>
           <dt>Postfächer</dt><dd>${accCount(u)}</dd><dt>Notfallcodes übrig</dt><dd>${(() => { try { return JSON.parse(u.recovery || '[]').length } catch { return 0 } })()}</dd>
           <dt>Bereiche</dt><dd>${Object.keys(FEATURES).filter(k => f[k]).map(k => esc(FEATURES[k].split(' (')[0])).join(', ') || 'nur Sortieren'}</dd></dl>

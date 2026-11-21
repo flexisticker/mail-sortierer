@@ -2,6 +2,7 @@
 
 Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticker/flex-studio`). Kommunikation Deutsch, Du-Form.
 **Keine Passwörter, Tokens oder Schlüssel in Code, Doku oder diese Datei.**
+**Regel 2FA: höchstens 10 Fehlversuche, dann Sperre (Kundenvorgabe 21.11.2026, gilt für alle Projekte).**
 
 ## Ziel & Entscheidungen (17.11.2026)
 
@@ -32,7 +33,7 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
 - `src/classify.js`: eigene Adresse → aktive Regel → Kontakt Kunde (fest) / Lieferant (Hinweis) → Ollama `/api/chat` mit JSON-Schema, temperature 0,
   Beispiele als user/assistant-Paare. Unter `minConfidence` (Ausmisten `minConfidenceTrash`) → Posteingang mit Vorschlag im Grund.
 - Sicherheit (ab 2.0): mehrere Nutzer, scrypt 2^16, Sitzung nur SHA-256, Cookie HttpOnly/SameSite=Lax (+Secure über HTTPS), CSRF-Feld + Origin-Prüfung,
-  5 Fehlversuche → 15 Min., **TOTP-Pflicht**, IMAP-/SMTP-Passwörter + 2FA-Geheimnis AES-256-GCM (`secrets.js`, Schlüssel `DATA_DIR/.schluessel`).
+  5 Fehlversuche → 15 Min., **TOTP-Pflicht** (10 falsche Codes je Konto → 24 Std. Sperre, siehe 2.9.0), IMAP-/SMTP-Passwörter + 2FA-Geheimnis AES-256-GCM (`secrets.js`, Schlüssel `DATA_DIR/.schluessel`).
   Von außen über NPM (HTTPS dort), `trust proxy` = loopback + uniquelocal, Angriffsschutz `shield-core.js` (Kopie aus Vedly).
 - Zweige wie bei Vedly: Entwicklung `claude/…`, **`main` = Produktivstand (`:latest`)** – jede Auslieferung auch nach `main` pushen.
   Paket auf ghcr.io ist **öffentlich** (Unraid hat für neue Pakete keine gültige Anmeldung).
@@ -223,3 +224,12 @@ Eigenes Projekt von Michael (Flexisticker), **getrennt von Vedly** (`flexisticke
   „Speichern & alle testen“ (je Server Modell vorhanden + Testmail, `noteTest`), Zustandstabelle. Getestet (Mock-Ollama 1 s je Mail, 8 Mails): 1 Server 8,6 s, 2 Server 4,5 s (4/4 verteilt), zweiter aus 8,5 s ohne Fehler.
   **Nicht getestet:** echtes Ollama auf Michaels PC (Erreichbarkeit zwischen 192.168.1.x und 192.168.175.x), Rechnungs-Auslesen (läuft weiter nacheinander, nutzt aber jeden freien Server).
 - **2.8.1:** Michael hat auf dem PC schon ein anderes Qwen-Modell – kein Download nötig: KI-Test nennt bei fehlendem Modell die auf dem Server vorhandenen (`/api/tags`), Anleitung zeigt `ollama list` statt `ollama pull`.
+- **2.9.0 (21.11.2026): 2FA höchstens 10 Fehlversuche** (Kundenvorgabe für alle Projekte). Bisher nur 5 je Sitzung → mit bekanntem Passwort beliebig weiter raten.
+  Jetzt Zähler je Konto in `users` (`mfa_fails`, `mfa_fail_at`, `mfa_locked_until`; überlebt Neustart/neue Sitzungen, zählt 24 Std. ab dem letzten Fehlversuch) für
+  Einrichtung, Anmelde-Code, Notfallcode und Bestätigungen (Verwaltung, neue Notfallcodes). Beim 10. falschen Code (`MFA_MAX`): Konto 24 Std. gesperrt (`login()` lehnt nach
+  richtigem Passwort ab, auch Notfallcodes nicht), alle Sitzungen weg, `sysLog` warn, IP per `setMfaLockHook` → `shield.strike(ip, 'login', { points: 10 })` gesperrt
+  (Heimnetz/Ausnahmen/„angemeldet“-IPs bleiben frei – dort greift nur die Kontosperre; shield-core.js unverändert, keine Abweichung zu Vedly). Erfolg setzt zurück.
+  Aufheben: Verwaltung „Fehlversuche zurücksetzen“ (`unlockName`, Pill „2FA gesperrt“), Passwort-/2FA-Reset, Entsperren, `reset-admin.js`.
+  Getestet (Server + Skript, öffentliche IP per X-Forwarded-For): 5 → neu anmelden, 10 → Sperre + IP 403, nach Neustart weiter gesperrt, Entsperren geht, shield-check grün.
+  **Nicht getestet:** im Browser (nur per Skript), Mail-Benachrichtigung gibt es nicht (Postwart verschickt keine Systemmails).
+

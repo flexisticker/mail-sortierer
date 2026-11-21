@@ -138,6 +138,10 @@ addColumn('users', 'must_change', 'INTEGER NOT NULL DEFAULT 0')
 addColumn('users', 'disabled', 'INTEGER NOT NULL DEFAULT 0')
 addColumn('users', 'notice', 'TEXT')                          // Hinweis bei der nächsten Anmeldung
 addColumn('users', 'last_login', 'TEXT')
+// Ab 2.9: falsche 2FA-Codes je Konto (dauerhaft, über alle Sitzungen) – höchstens 10, dann Sperre
+addColumn('users', 'mfa_fails', 'INTEGER NOT NULL DEFAULT 0')
+addColumn('users', 'mfa_fail_at', 'INTEGER NOT NULL DEFAULT 0')      // letzter Fehlversuch (ms)
+addColumn('users', 'mfa_locked_until', 'INTEGER NOT NULL DEFAULT 0') // Sperre bis (ms)
 addColumn('sessions', 'remember', 'INTEGER NOT NULL DEFAULT 1')
 addColumn('sessions', 'stage', "TEXT NOT NULL DEFAULT 'full'") // pw | enroll | mfa | full
 addColumn('sessions', 'stepup_at', 'INTEGER NOT NULL DEFAULT 0')
